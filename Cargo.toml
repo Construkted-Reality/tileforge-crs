@@ -1,0 +1,21 @@
+[package]
+name = "tileforge-crs"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Construkted Reality"]
+publish = false
+description = "Error-agnostic CRS core (proj4rs → EPSG:4978 reprojection, WKT/sidecar EPSG parsing) shared by tileforge-pc and tileforge-mesh. See tileforge-pc ADR-004 and tileforge-mesh ADR-041."
+
+[dependencies]
+# CRS reprojection (tileforge-pc ADR-004). The `crs-definitions` feature
+# pulls in the proj4-EPSG catalogue so `Proj::from_epsg_code(u16)` works.
+# Version pinned to match tileforge-pc's workspace.
+proj4rs = { version = "0.1.10", features = ["crs-definitions"] }
+thiserror = "2"
+
+[dev-dependencies]
+# Permanent test oracle per ADR-004 + spike 0g. The PROJ FFI is a
+# `[dev-dependencies]` so consumers don't pull in system libproj.
+# Version matched to tileforge-pc's workspace.
+proj = "0.31"
