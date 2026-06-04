@@ -14,8 +14,9 @@ description = "Error-agnostic CRS core (proj4rs → EPSG:4978 reprojection, WKT/
 proj4rs = { version = "0.1.10", features = ["crs-definitions"] }
 thiserror = "2"
 
-[dev-dependencies]
-# Permanent test oracle per ADR-004 + spike 0g. The PROJ FFI is a
-# `[dev-dependencies]` so consumers don't pull in system libproj.
-# Version matched to tileforge-pc's workspace.
-proj = "0.31"
+# NOTE: the parity oracle compares Reprojector output to FROZEN PROJ
+# ground-truth grids in tests/fixtures/*.parity-grid.txt (captured offline
+# from PROJ 9.x). The live `proj` FFI is intentionally NOT a dependency —
+# it requires system libproj/SQLite3, which build hosts (e.g. .211) lack,
+# and no test invokes it at runtime. Regenerate fixtures on a PROJ-equipped
+# machine if the reprojection ever changes. (tileforge-pc ADR-004.)

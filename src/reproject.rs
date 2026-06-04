@@ -21,6 +21,12 @@ const EPSG_ECEF: u16 = 4978;
 /// catalogue; subsequent `to_ecef` calls are pure numerical work.
 pub struct Reprojector {
     source_epsg: u16,
+    /// Whether the source CRS is geographic (lat/long). proj4rs expects
+    /// **radians** for geographic input, so `to_ecef` converts degrees→
+    /// radians for the horizontal pair when this is true (ADR-041 C1).
+    /// False for projected/geocentric sources → no conversion (PC's UTM/
+    /// ECEF path is byte-identical).
+    source_is_latlong: bool,
     source: Proj,
     target: Proj,
 }
@@ -53,8 +59,10 @@ impl Reprojector {
                 "EPSG:{EPSG_ECEF} (ECEF target) missing from catalogue: {e:?}"
             ))
         })?;
+        let source_is_latlong = source_proj.is_latlong();
         Ok(Self {
             source_epsg: source.epsg,
+            source_is_latlong,
             source: source_proj,
             target: target_proj,
         })
@@ -69,7 +77,13 @@ impl Reprojector {
         if self.is_identity() {
             return Ok(xyz);
         }
-        let mut p = (xyz[0], xyz[1], xyz[2]);
+        // proj4rs wants RADIANS for geographic (lat/long) sources; degrees
+        // would silently produce garbage ECEF (ADR-041 C1). Height is metres.
+        let mut p = if self.source_is_latlong {
+            (xyz[0].to_radians(), xyz[1].to_radians(), xyz[2])
+        } else {
+            (xyz[0], xyz[1], xyz[2])
+        };
         transform(&self.source, &self.target, &mut p).map_err(|e| {
             CrsError::reproject(format!(
                 "reproject EPSG:{} → EPSG:{EPSG_ECEF} for ({}, {}, {}) failed: {e:?}",
@@ -83,5 +97,40 @@ impl Reprojector {
     /// identity.
     pub fn is_identity(&self) -> bool {
         self.source_epsg == EPSG_ECEF
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ecef_to_geodetic_lonlat;
+
+    #[test]
+    fn geographic_source_round_trips_degrees() {
+        // WGS84 lat/long (EPSG:4326) in DEGREES → ECEF → back to geodetic
+        // must recover the input degrees. Confirms the degrees→radians
+        // handling for geographic sources (ADR-041 C1): degrees-in without
+        // the conversion would produce nonsense-scale ECEF and fail the
+        // magnitude check below.
+        let rp = Reprojector::new(SourceCrs::new(4326)).expect("4326 in catalogue");
+        assert!(rp.source_is_latlong, "EPSG:4326 must be detected geographic");
+        let (lon_deg, lat_deg, h) = (18.2912_f64, 49.0305_f64, 175.0_f64);
+        let ecef = rp.to_ecef([lon_deg, lat_deg, h]).expect("reproject");
+        let mag = (ecef[0].powi(2) + ecef[1].powi(2) + ecef[2].powi(2)).sqrt();
+        assert!(
+            (mag - 6.369e6).abs() < 5.0e4,
+            "ECEF magnitude must be ~Earth radius (degrees treated as radians), got {mag}"
+        );
+        let (lon_r, lat_r) = ecef_to_geodetic_lonlat(ecef).expect("ecef→geodetic");
+        assert!((lon_r.to_degrees() - lon_deg).abs() < 1e-6, "lon round-trip");
+        assert!((lat_r.to_degrees() - lat_deg).abs() < 1e-6, "lat round-trip");
+    }
+
+    #[test]
+    fn projected_source_not_flagged_latlong() {
+        // UTM zone 33N (EPSG:32633) is projected metres → no radians
+        // conversion (PC's path stays byte-identical).
+        let rp = Reprojector::new(SourceCrs::new(32633)).expect("32633 in catalogue");
+        assert!(!rp.source_is_latlong, "UTM must not be flagged geographic");
     }
 }
