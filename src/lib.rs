@@ -51,7 +51,7 @@ mod wkt;
 pub use crs_hint::{CrsHint, CrsResolution};
 pub use enu::{EnuFrame, ecef_to_geodetic_lonlat};
 pub use error::CrsError;
-pub use reproject::Reprojector;
+pub use reproject::{Reprojector, is_geotiff_sentinel, is_supported_epsg};
 pub use sidecar::{
     ParsedCrs, SidecarCrs, detect_crs_from_sidecar, parse_crs_string, parse_crs_string_epsg,
 };

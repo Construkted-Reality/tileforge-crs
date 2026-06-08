@@ -100,10 +100,62 @@ impl Reprojector {
     }
 }
 
+/// GeoTIFF reserved sentinel codes: `0` ("undefined") and `32767`
+/// ("user-defined"). Per the GeoTIFF spec these are **not** EPSG codes —
+/// a GeoKey, WKT `AUTHORITY`, or sidecar that carries one of them is
+/// declaring "I have no standard CRS", not naming a projection. Consumers
+/// should treat a sentinel as *absence* (fall through their CRS cascade
+/// to local-frame), never feed it to [`Reprojector::new`] / the proj4
+/// catalogue. The private/user range `32768..=65535` is left out
+/// deliberately: those are implementation-defined and a consumer that
+/// genuinely uses one should hit the normal "unresolvable EPSG" error
+/// path rather than be silently localised.
+pub const fn is_geotiff_sentinel(epsg: u16) -> bool {
+    matches!(epsg, 0 | 32767)
+}
+
+/// `true` iff `epsg` resolves in the proj4 `crs-definitions` catalogue —
+/// i.e. [`Reprojector::new`] would succeed for it. A cheap pre-flight
+/// for `--crs` validation and friendly error messages: it builds (and
+/// drops) only the source `Proj`, not the full reprojector, and never
+/// touches the fixed ECEF target. Returns `false` for sentinels and for
+/// any code absent from the catalogue.
+pub fn is_supported_epsg(epsg: u16) -> bool {
+    Proj::from_epsg_code(epsg).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ecef_to_geodetic_lonlat;
+
+    #[test]
+    fn geotiff_sentinels_are_flagged() {
+        assert!(is_geotiff_sentinel(0), "0 = undefined");
+        assert!(is_geotiff_sentinel(32767), "32767 = user-defined");
+    }
+
+    #[test]
+    fn real_epsg_codes_are_not_sentinels() {
+        for code in [4326, 4978, 32617, 32719, 26917] {
+            assert!(!is_geotiff_sentinel(code), "{code} is a real EPSG");
+        }
+        // Private/user range is intentionally NOT a sentinel.
+        assert!(!is_geotiff_sentinel(32768));
+    }
+
+    #[test]
+    fn is_supported_epsg_matches_catalogue() {
+        // Catalogued codes the reprojector can build.
+        assert!(is_supported_epsg(4978), "ECEF target is always present");
+        assert!(is_supported_epsg(4326));
+        assert!(is_supported_epsg(32617));
+        // Sentinels and out-of-catalogue codes are unsupported.
+        assert!(!is_supported_epsg(32767), "user-defined sentinel");
+        assert!(!is_supported_epsg(0), "undefined sentinel");
+        // A code that is not in the proj4 catalogue.
+        assert!(!is_supported_epsg(60000));
+    }
 
     #[test]
     fn geographic_source_round_trips_degrees() {
@@ -113,7 +165,10 @@ mod tests {
         // the conversion would produce nonsense-scale ECEF and fail the
         // magnitude check below.
         let rp = Reprojector::new(SourceCrs::new(4326)).expect("4326 in catalogue");
-        assert!(rp.source_is_latlong, "EPSG:4326 must be detected geographic");
+        assert!(
+            rp.source_is_latlong,
+            "EPSG:4326 must be detected geographic"
+        );
         let (lon_deg, lat_deg, h) = (18.2912_f64, 49.0305_f64, 175.0_f64);
         let ecef = rp.to_ecef([lon_deg, lat_deg, h]).expect("reproject");
         let mag = (ecef[0].powi(2) + ecef[1].powi(2) + ecef[2].powi(2)).sqrt();
@@ -122,8 +177,14 @@ mod tests {
             "ECEF magnitude must be ~Earth radius (degrees treated as radians), got {mag}"
         );
         let (lon_r, lat_r) = ecef_to_geodetic_lonlat(ecef).expect("ecef→geodetic");
-        assert!((lon_r.to_degrees() - lon_deg).abs() < 1e-6, "lon round-trip");
-        assert!((lat_r.to_degrees() - lat_deg).abs() < 1e-6, "lat round-trip");
+        assert!(
+            (lon_r.to_degrees() - lon_deg).abs() < 1e-6,
+            "lon round-trip"
+        );
+        assert!(
+            (lat_r.to_degrees() - lat_deg).abs() < 1e-6,
+            "lat round-trip"
+        );
     }
 
     #[test]
