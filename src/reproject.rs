@@ -114,6 +114,21 @@ pub const fn is_geotiff_sentinel(epsg: u16) -> bool {
     matches!(epsg, 0 | 32767)
 }
 
+/// `true` iff `epsg` is a **geographic** (angular, lat/long) CRS — its
+/// coordinates are in degrees, not metres. Built by resolving the code and
+/// asking proj4rs whether it is lat/long. Returns `false` for projected
+/// CRS, geocentric/ECEF, and any code not in the catalogue.
+///
+/// Consumers that partition in a metric frame use this to decide whether a
+/// source needs reprojecting to metres (e.g. a local ENU frame) before the
+/// octree cubifies its bbox — a geographic bbox mixes degree X/Y with metre
+/// Z and cannot be cubified directly.
+pub fn is_geographic_epsg(epsg: u16) -> bool {
+    Proj::from_epsg_code(epsg)
+        .map(|p| p.is_latlong())
+        .unwrap_or(false)
+}
+
 /// `true` iff `epsg` resolves in the proj4 `crs-definitions` catalogue —
 /// i.e. [`Reprojector::new`] would succeed for it. A cheap pre-flight
 /// for `--crs` validation and friendly error messages: it builds (and
@@ -142,6 +157,24 @@ mod tests {
         }
         // Private/user range is intentionally NOT a sentinel.
         assert!(!is_geotiff_sentinel(32768));
+    }
+
+    #[test]
+    fn is_geographic_epsg_classifies_correctly() {
+        // Geographic (lat/long degrees).
+        assert!(is_geographic_epsg(4326), "WGS84 lat/long");
+        assert!(is_geographic_epsg(4269), "NAD83 lat/long");
+        // Projected (metres) — not geographic.
+        assert!(!is_geographic_epsg(32633), "UTM 33N is projected");
+        assert!(!is_geographic_epsg(2154), "Lambert-93 is projected");
+        // Geocentric/ECEF — not geographic (lat/long).
+        assert!(
+            !is_geographic_epsg(4978),
+            "ECEF is geocentric, not lat/long"
+        );
+        // Out of catalogue / sentinel.
+        assert!(!is_geographic_epsg(0));
+        assert!(!is_geographic_epsg(32767));
     }
 
     #[test]

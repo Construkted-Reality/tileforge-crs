@@ -89,15 +89,51 @@ impl EnuFrame {
         [dot(self.east, d), dot(self.north, d), dot(self.up, d)]
     }
 
+    /// Map a local ENU point (metres, `(X,Y,Z) = (East,North,Up)`) back to
+    /// ECEF metres. The exact inverse of [`EnuFrame::ecef_to_enu`]: applies
+    /// the ENU→ECEF rotation (the East/North/Up basis as columns) and adds
+    /// the origin. Equivalent to multiplying by [`EnuFrame::enu_to_ecef_matrix`]
+    /// but without materialising the matrix — used by consumers that
+    /// partition in the ENU frame and bake coordinates back to absolute ECEF
+    /// per point (rather than emitting a tileset root transform).
+    pub fn enu_to_ecef(&self, enu: [f64; 3]) -> [f64; 3] {
+        [
+            self.east[0] * enu[0]
+                + self.north[0] * enu[1]
+                + self.up[0] * enu[2]
+                + self.origin_ecef[0],
+            self.east[1] * enu[0]
+                + self.north[1] * enu[1]
+                + self.up[1] * enu[2]
+                + self.origin_ecef[1],
+            self.east[2] * enu[0]
+                + self.north[2] * enu[1]
+                + self.up[2] * enu[2]
+                + self.origin_ecef[2],
+        ]
+    }
+
     /// The 4×4 **column-major** `local-ENU → ECEF` matrix — the 3D Tiles
     /// root `transform`. Columns: East, North, Up (rotation), then the ECEF
     /// origin (translation). `M · [x,y,z,1]ᵀ = ECEF`.
     pub fn enu_to_ecef_matrix(&self) -> [f64; 16] {
         [
-            self.east[0], self.east[1], self.east[2], 0.0, // col 0: East → local X
-            self.north[0], self.north[1], self.north[2], 0.0, // col 1: North → local Y
-            self.up[0], self.up[1], self.up[2], 0.0, // col 2: Up → local Z
-            self.origin_ecef[0], self.origin_ecef[1], self.origin_ecef[2], 1.0, // col 3: origin
+            self.east[0],
+            self.east[1],
+            self.east[2],
+            0.0, // col 0: East → local X
+            self.north[0],
+            self.north[1],
+            self.north[2],
+            0.0, // col 1: North → local Y
+            self.up[0],
+            self.up[1],
+            self.up[2],
+            0.0, // col 2: Up → local Z
+            self.origin_ecef[0],
+            self.origin_ecef[1],
+            self.origin_ecef[2],
+            1.0, // col 3: origin
         ]
     }
 
@@ -144,6 +180,31 @@ mod tests {
         let enu = f.ecef_to_enu(o);
         for c in enu {
             assert!(c.abs() < 1e-6, "origin → ~0 local, got {enu:?}");
+        }
+    }
+
+    #[test]
+    fn enu_to_ecef_inverts_ecef_to_enu() {
+        // enu_to_ecef must be the exact inverse of ecef_to_enu, and must
+        // agree with the column-major matrix form.
+        let f = EnuFrame::from_ecef_origin(sample_ecef()).unwrap();
+        let local = [123.456_f64, -78.9, 12.34];
+        let ecef = f.enu_to_ecef(local);
+        let back = f.ecef_to_enu(ecef);
+        for (a, b) in back.iter().zip(local.iter()) {
+            assert!((a - b).abs() < 1e-6, "round-trip: {back:?} vs {local:?}");
+        }
+        let m = f.enu_to_ecef_matrix();
+        let via_matrix = [
+            m[0] * local[0] + m[4] * local[1] + m[8] * local[2] + m[12],
+            m[1] * local[0] + m[5] * local[1] + m[9] * local[2] + m[13],
+            m[2] * local[0] + m[6] * local[1] + m[10] * local[2] + m[14],
+        ];
+        for (a, b) in ecef.iter().zip(via_matrix.iter()) {
+            assert!(
+                (a - b).abs() < 1e-9,
+                "enu_to_ecef vs matrix: {ecef:?} vs {via_matrix:?}"
+            );
         }
     }
 
