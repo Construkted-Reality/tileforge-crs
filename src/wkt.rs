@@ -7,11 +7,18 @@
 //! an `AUTHORITY["EPSG","NNNN"]` clause when produced by PDAL, lastools,
 //! QGIS, or GDAL).
 //!
-//! Supported root blocks: `PROJCS`, `GEOGCS`, `GEOCCS`, and `COMPD_CS`.
-//! For `COMPD_CS`, the scanner descends into the first horizontal
-//! subblock (`PROJCS` / `GEOGCS` / `GEOCCS`) and reports the vertical
-//! component as stripped via `WktExtraction::vertical_stripped` — the
-//! caller decides what to do (PC ignores, mesh warns).
+//! Supported root blocks — both **WKT1** and **WKT2** (LAS 1.4 producers
+//! increasingly emit WKT2):
+//! - WKT1: `PROJCS`, `GEOGCS`, `GEOCCS`, `COMPD_CS`.
+//! - WKT2: `PROJCRS`, `GEOGCRS`, `GEODCRS`, `COMPOUNDCRS`, `BOUNDCRS`.
+//!
+//! The EPSG code is read from the outermost authority clause, which is
+//! `AUTHORITY["EPSG","NNNN"]` in WKT1 and `ID["EPSG",NNNN]` (code often
+//! **unquoted**) in WKT2. For a compound CRS the scanner descends into the
+//! first horizontal subblock and reports the vertical component as stripped
+//! via `WktExtraction::vertical_stripped` — the caller decides what to do
+//! (PC ignores, mesh warns). For a `BOUNDCRS` (a CRS bundled with a datum
+//! transform) it descends into `SOURCECRS` and recurses.
 
 use crate::error::CrsError;
 
@@ -44,10 +51,13 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
     let body = &wkt[after_open + 1..close_idx];
 
     match id_upper.as_str() {
-        "COMPD_CS" => {
-            let horizontal = find_first_horizontal_subblock(body).ok_or_else(|| {
+        // Compound CRS (WKT1 COMPD_CS / WKT2 COMPOUNDCRS): take the first
+        // horizontal subblock, mark the vertical component stripped.
+        "COMPD_CS" | "COMPOUNDCRS" => {
+            let horizontal = find_child_block(body, HORIZONTAL_KEYWORDS).ok_or_else(|| {
                 CrsError::parse(
-                    "COMPD_CS contains no PROJCS/GEOGCS/GEOCCS subblock to extract EPSG from"
+                    "compound CRS contains no horizontal (PROJCS/GEOGCS/GEOCCS/\
+                     PROJCRS/GEOGCRS/GEODCRS) subblock to extract EPSG from"
                         .to_string(),
                 )
             })?;
@@ -57,7 +67,19 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
                 vertical_stripped: true,
             })
         }
-        "PROJCS" | "GEOGCS" | "GEOCCS" => {
+        // WKT2 BOUNDCRS wraps the real CRS in SOURCECRS (plus a datum
+        // transform to a target). The EPSG we want is the source CRS's.
+        "BOUNDCRS" => {
+            let source = find_child_block(body, &["SOURCECRS"])
+                .ok_or_else(|| CrsError::parse("BOUNDCRS has no SOURCECRS subblock".to_string()))?;
+            // `source` is `SOURCECRS[<crs>]`; its body is the wrapped CRS.
+            let inner_crs = block_body(source)
+                .ok_or_else(|| CrsError::parse("BOUNDCRS SOURCECRS is malformed".to_string()))?;
+            extract_epsg_from_wkt(inner_crs.trim())
+        }
+        // Simple CRS that directly carries the authority/ID clause.
+        // WKT1: PROJCS/GEOGCS/GEOCCS. WKT2: PROJCRS/GEOGCRS/GEODCRS.
+        "PROJCS" | "GEOGCS" | "GEOCCS" | "PROJCRS" | "GEOGCRS" | "GEODCRS" => {
             let epsg = parse_epsg_authority_in_body(body)?;
             Ok(WktExtraction {
                 epsg,
@@ -65,9 +87,26 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
             })
         }
         _ => Err(CrsError::parse(format!(
-            "WKT VLR root is unexpected '{id}' (want PROJCS / GEOGCS / GEOCCS / COMPD_CS)"
+            "WKT VLR root is unexpected '{id}' (want a WKT1 PROJCS/GEOGCS/GEOCCS/COMPD_CS \
+             or WKT2 PROJCRS/GEOGCRS/GEODCRS/COMPOUNDCRS/BOUNDCRS)"
         ))),
     }
+}
+
+/// Horizontal-CRS root keywords, WKT1 and WKT2. Used to find the
+/// horizontal component of a compound CRS.
+const HORIZONTAL_KEYWORDS: &[&str] = &[
+    "PROJCS", "GEOGCS", "GEOCCS", // WKT1
+    "PROJCRS", "GEOGCRS", "GEODCRS", // WKT2
+];
+
+/// Given a `KEYWORD[...]` substring, return the slice between its outer
+/// brackets (the block body), or `None` if malformed.
+fn block_body(block: &str) -> Option<&str> {
+    let bytes = block.as_bytes();
+    let open = bytes.iter().position(|&b| b == b'[')?;
+    let close = find_matching_bracket(bytes, open)?;
+    Some(&block[open + 1..close])
 }
 
 fn skip_whitespace(bytes: &[u8], mut i: usize) -> usize {
@@ -132,10 +171,10 @@ fn find_matching_bracket(bytes: &[u8], open_idx: usize) -> Option<usize> {
     None
 }
 
-/// Walk the tokens of `body` (which is the contents of a COMPD_CS block,
-/// excluding its outer brackets). Return the substring of the first
-/// child block whose identifier is one of PROJCS/GEOGCS/GEOCCS.
-fn find_first_horizontal_subblock(body: &str) -> Option<&str> {
+/// Walk the depth-0 tokens of `body` (the contents of a block, excluding
+/// its outer brackets) and return the substring of the first child block
+/// whose identifier (case-insensitive) is in `keywords`.
+fn find_child_block<'a>(body: &'a str, keywords: &[&str]) -> Option<&'a str> {
     let bytes = body.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -161,12 +200,10 @@ fn find_first_horizontal_subblock(body: &str) -> Option<&str> {
             let after_ws = skip_whitespace(bytes, after_id);
             if after_ws < bytes.len() && bytes[after_ws] == b'[' {
                 let close = find_matching_bracket(bytes, after_ws)?;
-                let id_upper = id.to_ascii_uppercase();
-                if matches!(id_upper.as_str(), "PROJCS" | "GEOGCS" | "GEOCCS") {
+                if keywords.iter().any(|k| id.eq_ignore_ascii_case(k)) {
                     return Some(&body[i..=close]);
                 }
-                // Skip past this non-horizontal block (e.g. VERT_CS,
-                // AUTHORITY) and continue scanning.
+                // Skip past this non-matching block and continue scanning.
                 i = close + 1;
                 continue;
             }
@@ -213,7 +250,8 @@ fn parse_epsg_authority_in_body(body: &str) -> Result<u16, CrsError> {
                         "unbalanced brackets while scanning for AUTHORITY".to_string(),
                     ));
                 };
-                if id.eq_ignore_ascii_case("AUTHORITY") {
+                // WKT1 `AUTHORITY["EPSG","NNNN"]` or WKT2 `ID["EPSG",NNNN]`.
+                if id.eq_ignore_ascii_case("AUTHORITY") || id.eq_ignore_ascii_case("ID") {
                     let inner = &body[after_ws + 1..close];
                     return parse_authority_args(inner);
                 }
@@ -226,22 +264,26 @@ fn parse_epsg_authority_in_body(body: &str) -> Result<u16, CrsError> {
         i += 1;
     }
     Err(CrsError::parse(
-        "WKT VLR has no EPSG AUTHORITY clause; pre-process with `pdal translate` to inject one"
+        "WKT VLR has no EPSG AUTHORITY/ID clause; pre-process with `pdal translate` to inject one"
             .to_string(),
     ))
 }
 
-/// Parse the contents of an AUTHORITY block: `"EPSG","NNNN"`.
+/// Parse the contents of an `AUTHORITY`/`ID` block. Handles both WKT1
+/// `"EPSG","NNNN"` (code quoted) and WKT2 `"EPSG",NNNN` (code unquoted),
+/// and tolerates extra WKT2 trailing args (e.g. `…,VERSION[...]` /
+/// `…,URI[...]`) by reading only the first two.
 fn parse_authority_args(inner: &str) -> Result<u16, CrsError> {
     let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-    if parts.len() != 2 {
+    if parts.len() < 2 {
         return Err(CrsError::parse(format!(
-            "AUTHORITY clause must have two arguments, got {} ({inner:?})",
+            "AUTHORITY/ID clause must have at least two arguments, got {} ({inner:?})",
             parts.len()
         )));
     }
     let authority = strip_quotes(parts[0])?;
-    let code_str = strip_quotes(parts[1])?;
+    // WKT1 quotes the code; WKT2 leaves it bare. Accept either.
+    let code_str = strip_quotes_opt(parts[1]);
     if !authority.eq_ignore_ascii_case("EPSG") {
         return Err(CrsError::parse(format!(
             "WKT VLR uses non-EPSG authority '{authority}'; only EPSG is supported"
@@ -249,9 +291,20 @@ fn parse_authority_args(inner: &str) -> Result<u16, CrsError> {
     }
     code_str.parse::<u16>().map_err(|e| {
         CrsError::parse(format!(
-            "AUTHORITY code is not a valid EPSG u16: {code_str:?}: {e}"
+            "AUTHORITY/ID code is not a valid EPSG u16: {code_str:?}: {e}"
         ))
     })
+}
+
+/// Strip surrounding double-quotes if present; otherwise return the
+/// trimmed input unchanged (WKT2 numeric codes are unquoted).
+fn strip_quotes_opt(s: &str) -> &str {
+    let s = s.trim();
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
 }
 
 fn strip_quotes(s: &str) -> Result<&str, CrsError> {
@@ -377,6 +430,83 @@ mod tests {
         "#;
         let r = extract_epsg_from_wkt(wkt).unwrap();
         assert_eq!(r.epsg, 32617);
+    }
+
+    // ---- WKT2 (ISO 19162) ----
+
+    #[test]
+    fn wkt2_geogcrs_unquoted_id_yields_4326() {
+        // WKT2 geographic: root GEOGCRS, code unquoted in ID[].
+        let wkt = r#"GEOGCRS["WGS 84",
+            DATUM["World Geodetic System 1984",
+                ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],
+            CS[ellipsoidal,2],
+                AXIS["geodetic latitude (Lat)",north],
+                AXIS["geodetic longitude (Lon)",east],
+                ANGLEUNIT["degree",0.0174532925199433],
+            ID["EPSG",4326]]"#;
+        let r = extract_epsg_from_wkt(wkt).unwrap();
+        assert_eq!(r.epsg, 4326);
+        assert!(!r.vertical_stripped);
+    }
+
+    #[test]
+    fn wkt2_geodcrs_nad83_yields_4269() {
+        let wkt = r#"GEODCRS["NAD83",
+            DATUM["North American Datum 1983",
+                ELLIPSOID["GRS 1980",6378137,298.257222101]],
+            CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],
+            ID["EPSG",4269]]"#;
+        assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 4269);
+    }
+
+    #[test]
+    fn wkt2_projcrs_takes_projected_id_not_base() {
+        // The outermost ID (32617) is the projected code; the nested
+        // BASEGEOGCRS ID (4326) must NOT shadow it.
+        let wkt = r#"PROJCRS["WGS 84 / UTM zone 17N",
+            BASEGEOGCRS["WGS 84",
+                DATUM["World Geodetic System 1984",
+                    ELLIPSOID["WGS 84",6378137,298.257223563]],
+                ID["EPSG",4326]],
+            CONVERSION["UTM zone 17N",METHOD["Transverse Mercator",ID["EPSG",9807]]],
+            CS[Cartesian,2],AXIS["(E)",east],AXIS["(N)",north],
+            LENGTHUNIT["metre",1],
+            ID["EPSG",32617]]"#;
+        assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 32617);
+    }
+
+    #[test]
+    fn wkt2_compoundcrs_strips_vertical() {
+        let wkt = r#"COMPOUNDCRS["NAD83 / UTM 17N + NAVD88",
+            PROJCRS["NAD83 / UTM zone 17N",
+                BASEGEOGCRS["NAD83",DATUM["NAD83",ELLIPSOID["GRS 1980",6378137,298.257222101]],ID["EPSG",4269]],
+                CONVERSION["x",METHOD["Transverse Mercator"]],
+                CS[Cartesian,2],AXIS["e",east],AXIS["n",north],ID["EPSG",26917]],
+            VERTCRS["NAVD88",VDATUM["North American Vertical Datum 1988"],
+                CS[vertical,1],AXIS["up",up],ID["EPSG",5703]]]"#;
+        let r = extract_epsg_from_wkt(wkt).unwrap();
+        assert_eq!(r.epsg, 26917);
+        assert!(r.vertical_stripped);
+    }
+
+    #[test]
+    fn wkt2_boundcrs_descends_into_sourcecrs() {
+        let wkt = r#"BOUNDCRS[
+            SOURCECRS[GEOGCRS["unknown",DATUM["d",ELLIPSOID["GRS 1980",6378137,298.257222101]],
+                CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],ID["EPSG",4269]]],
+            TARGETCRS[GEOGCRS["WGS 84",DATUM["WGS84",ELLIPSOID["WGS 84",6378137,298.257223563]],ID["EPSG",4326]]],
+            ABRIDGEDTRANSFORMATION["NAD83 to WGS84",METHOD["Geocentric translations"],
+                PARAMETER["X",0,LENGTHUNIT["metre",1]]]]"#;
+        assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 4269);
+    }
+
+    #[test]
+    fn wkt2_id_with_trailing_uri_arg_is_tolerated() {
+        let wkt = r#"GEOGCRS["WGS 84",DATUM["d",ELLIPSOID["WGS 84",6378137,298.257223563]],
+            CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],
+            ID["EPSG",4326,URI["http://www.opengis.net/def/crs/EPSG/0/4326"]]]"#;
+        assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 4326);
     }
 
     #[test]
