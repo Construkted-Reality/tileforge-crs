@@ -2,8 +2,9 @@
 //! (PLY, XYZ/CSV) and the LAS cascade fallback.
 //!
 //! Convention: look for a sidecar file next to the input by replacing
-//! the extension with `.prj` (GIS canonical) or `.qpj` (QGIS variant).
-//! Two body formats are accepted:
+//! the extension with `.prj` (GIS canonical) or `.qpj` (QGIS variant),
+//! in either lower- or uppercase (`.PRJ` / `.QPJ` from legacy
+//! ESRI/Windows tooling). Two body formats are accepted:
 //!
 //! - **OGC WKT** — full `PROJCS[...]` / `GEOGCS[...]` / `GEOCCS[...]`
 //!   / `COMPD_CS[...]` string, same format as a LAS-1.4 WKT VLR.
@@ -26,10 +27,13 @@ use std::path::Path;
 use crate::error::CrsError;
 use crate::wkt::extract_epsg_from_wkt;
 
-/// Filename suffixes (lowercase) tried in order. `.prj` is the GIS
-/// canonical (ESRI, GDAL, PDAL, lastools); `.qpj` is QGIS's WKT-2
-/// variant. Both carry the same OGC-WKT body for our purposes.
-const SIDECAR_SUFFIXES: &[&str] = &[".prj", ".qpj"];
+/// Filename suffixes tried in order. `.prj` is the GIS canonical (ESRI,
+/// GDAL, PDAL, lastools); `.qpj` is QGIS's WKT-2 variant. Both carry the
+/// same OGC-WKT body for our purposes. Uppercase variants (`.PRJ` /
+/// `.QPJ`) are also probed for legacy ESRI/Windows exports (F6); on a
+/// case-sensitive filesystem those are distinct files. Lowercase is tried
+/// first so it keeps precedence when both cases exist.
+const SIDECAR_SUFFIXES: &[&str] = &[".prj", ".PRJ", ".qpj", ".QPJ"];
 
 /// Outcome of parsing a CRS string. Carries the resolved EPSG plus
 /// whether a vertical / compound component was present and dropped.
@@ -59,11 +63,11 @@ pub struct SidecarCrs {
     pub source: std::path::PathBuf,
 }
 
-/// Look for a sidecar `.prj` or `.qpj` next to `input`. Returns the
-/// first sidecar that parses cleanly. The lookup is case-insensitive
-/// in the suffix only — Linux file systems are case-sensitive, so
-/// `Foo.PRJ` next to `foo.ply` is intentionally not found (the user
-/// would write `foo.prj`).
+/// Look for a sidecar `.prj`/`.qpj` (or uppercase `.PRJ`/`.QPJ`) next to
+/// `input`. Returns the first sidecar that parses cleanly. Both suffix
+/// cases are probed so a `foo.PRJ` from legacy ESRI/Windows tooling next
+/// to `foo.ply` is found on a case-sensitive filesystem; the base
+/// filename stem must still match. Lowercase suffixes take precedence.
 pub fn detect_crs_from_sidecar(input: &Path) -> Result<Option<SidecarCrs>, CrsError> {
     for suffix in SIDECAR_SUFFIXES {
         let candidate = input.with_extension(suffix.trim_start_matches('.'));
@@ -232,6 +236,22 @@ mod tests {
         // options.
         assert!(msg.contains("EPSG:NNNNN"), "got: {msg}");
         assert!(msg.contains("WKT"), "got: {msg}");
+    }
+
+    #[test]
+    fn uppercase_prj_sidecar_is_found() {
+        // F6: legacy ESRI/Windows tooling emits `FOO.PRJ`. On case-sensitive
+        // Linux filesystems the old lowercase-only probe missed it and
+        // returned Ok(None), silently dropping georeferencing. We now also
+        // try the uppercase suffix variant.
+        let ply = write_tmp("upper.ply", "ply\n");
+        let prj = ply.with_extension("PRJ");
+        std::fs::write(&prj, KINGSTON_WKT).unwrap();
+        let r = detect_crs_from_sidecar(&ply).unwrap();
+        assert!(r.is_some(), "uppercase .PRJ sidecar must be found");
+        let r = r.unwrap();
+        assert_eq!(r.epsg, 32617);
+        assert_eq!(r.source, prj);
     }
 
     #[test]
