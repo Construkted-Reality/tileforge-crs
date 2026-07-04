@@ -92,3 +92,40 @@ fn forward_leg_is_deterministic_across_calls() {
     let b = rp.to_ecef(KINGSTON_UTM_INPUT).unwrap();
     assert_eq!(a, b, "two calls must be bit-identical");
 }
+
+/// MT2 — non-metre projected units (US survey feet). EPSG:2926 is
+/// Washington State Plane North (NAD83 / WA-N, `+units=us-ft`); no test
+/// otherwise exercises a non-metre linear unit, though state-plane feet
+/// are common in North American lidar. Input is easting/northing in
+/// **US survey feet**; a bug in proj4rs's us-ft scale handling would
+/// misplace the point by ~2 ppm (the ft-vs-us-ft difference).
+///
+/// The expected ECEF was captured from proj4rs and cross-validated
+/// against the closed-form WGS84 ellipsoid for the point's geographic
+/// position (lon −122.352°, lat 47.620°): X/Y/Z agree with
+/// `N·cos·cos`, `N·cos·sin`, `N(1−e²)·sin` to 4+ significant figures, so
+/// this pins *correct* unit handling, not merely self-consistent output.
+/// (A frozen-cs2cs external PROJ oracle for this point is MT1, blocked on
+/// a PROJ-9.x machine per the Cargo.toml NOTE.) This is a regression pin:
+/// it locks the us-ft path against a future proj4rs bump.
+const WA_SP_NORTH_USFT_INPUT: [f64; 3] = [1266000.0, 230000.0, 0.0];
+const WA_SP_NORTH_ECEF_EXPECTED: [f64; 3] = [-2304729.212267, -3638457.830071, 4688531.713529];
+
+#[test]
+fn us_survey_feet_source_to_ecef_matches_pin_within_1um() {
+    let rp = Reprojector::new(SourceCrs::new(2926)).expect("EPSG:2926 must be in catalogue");
+    assert!(
+        !rp.is_identity(),
+        "state-plane source must not report identity"
+    );
+    let out = rp
+        .to_ecef(WA_SP_NORTH_USFT_INPUT)
+        .expect("WA state-plane point is well inside the CRS domain of validity");
+    for (axis, (got, want)) in out.iter().zip(WA_SP_NORTH_ECEF_EXPECTED.iter()).enumerate() {
+        let delta = (got - want).abs();
+        assert!(
+            delta < PARITY_TOLERANCE_M,
+            "axis {axis}: got {got} want {want} (Δ {delta} m, tol {PARITY_TOLERANCE_M} m)"
+        );
+    }
+}
