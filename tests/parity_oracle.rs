@@ -21,9 +21,11 @@
 //! `convert` path; full 3D parity through it would require either a
 //! shell-out to `cs2cs` or direct proj-sys FFI. Frozen fixture +
 //! cs2cs-at-capture-time gives equivalent ground-truth quality with no
-//! runtime FFI dependency. The `proj` crate stays in `[dev-dependencies]`
-//! for the manifest-level promise; future cross-checks can use it for
-//! 2D corroboration if drift is suspected.
+//! runtime FFI dependency. The `proj` FFI crate is therefore **not** a
+//! dependency anywhere — `Cargo.toml` has no `[dev-dependencies]` and its
+//! NOTE forbids adding libproj/SQLite3 (build hosts lack them). Regenerate
+//! the fixtures with `cs2cs` on a PROJ-equipped machine if drift is
+//! suspected; do not reintroduce the FFI dep.
 
 use std::path::{Path, PathBuf};
 

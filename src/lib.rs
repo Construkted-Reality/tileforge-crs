@@ -11,6 +11,10 @@
 //!   `to_ecef` reprojects an `[x, y, z]` triple to ECEF metres
 //!   (EPSG:4978, the 3D Tiles 1.1 `box` bounding-volume contract),
 //!   `is_identity` is `true` iff the source EPSG is already 4978.
+//!   **Axis order:** for a *geographic* source the input is
+//!   `[lon_deg, lat_deg, h_m]` — GIS/proj4 x=East, y=North order, in
+//!   degrees — **not** the EPSG-official lat,lon order. Projected sources
+//!   take native `[easting, northing, h]` in the CRS's linear unit.
 //! - [`parse_crs_string`] / [`parse_crs_string_epsg`] — parse a
 //!   `EPSG:NNNNN` short form or OGC WKT body into an EPSG code, with a
 //!   `vertical_stripped` flag for compound CRS.

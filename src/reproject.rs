@@ -70,6 +70,20 @@ impl Reprojector {
 
     /// Reproject `[x, y, z]` from the source CRS to ECEF metres.
     ///
+    /// **Axis order & units (lon/lat-swap hazard).** For a **geographic**
+    /// source the input must be `[lon_deg, lat_deg, h_m]` — proj4/GIS order
+    /// (`x = longitude °E`, `y = latitude °N`), in **degrees**, height in
+    /// metres — **not** the EPSG-official lat,lon order (EPSG:4326's WKT
+    /// declares latitude first). A caller that honours EPSG axis order and
+    /// feeds `[lat, lon, h]` gets silently wrong output: the swap only
+    /// errors when `|lat-as-lon| > 90`; for e.g. (lon 45, lat 12) swapped
+    /// to (12, 45) it lands a continent away with no error. For a
+    /// **projected** source the input is native `[easting, northing, h]` in
+    /// the CRS's linear unit (metres, US survey feet, …). A `debug_assert`
+    /// guards `|lat| ≤ 90` on the geographic path as a cheap tripwire
+    /// (`|lon| ≤ 180` is intentionally *not* asserted — proj4rs wraps
+    /// longitude, so 190°E is valid).
+    ///
     /// Identity (source EPSG == 4978) short-circuits without calling
     /// proj4rs, which keeps the bit-equal semantics the integration
     /// tests rely on.
@@ -96,6 +110,15 @@ impl Reprojector {
         // proj4rs wants RADIANS for geographic (lat/long) sources; degrees
         // would silently produce garbage ECEF (ADR-041 C1). Height is metres.
         let mut p = if self.source_is_latlong {
+            // xyz = [lon_deg, lat_deg, h_m] (GIS/proj4 order). Latitude is
+            // xyz[1]; |lat| > 90 usually means the caller passed EPSG-order
+            // lat,lon. Debug tripwire only — release still returns proj4rs's
+            // LatitudeOutOfRange error for out-of-range latitude.
+            debug_assert!(
+                xyz[1].abs() <= 90.0,
+                "geographic to_ecef expects [lon_deg, lat_deg, h_m]; got latitude {} (>90° — lon/lat swapped?)",
+                xyz[1]
+            );
             (xyz[0].to_radians(), xyz[1].to_radians(), xyz[2])
         } else {
             (xyz[0], xyz[1], xyz[2])
