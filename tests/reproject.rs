@@ -20,6 +20,11 @@ const KINGSTON_ECEF_EXPECTED: [f64; 3] = [868600.711988, -4528298.769732, 439225
 /// resolution; we pin here to catch regressions early.
 const PARITY_TOLERANCE_M: f64 = 1.0e-6;
 
+/// WGS84 defining ellipsoid parameters (semi-major axis metres,
+/// flattening) — used only by the closed-form geographic oracle below.
+const WGS84_A: f64 = 6_378_137.0;
+const WGS84_F: f64 = 1.0 / 298.257_223_563;
+
 #[test]
 fn identity_epsg_4978_constructs_and_reports_identity() {
     let rp = Reprojector::new(SourceCrs::ECEF).expect("EPSG:4978 must be in catalogue");
@@ -127,5 +132,66 @@ fn us_survey_feet_source_to_ecef_matches_pin_within_1um() {
             delta < PARITY_TOLERANCE_M,
             "axis {axis}: got {got} want {want} (Δ {delta} m, tol {PARITY_TOLERANCE_M} m)"
         );
+    }
+}
+
+/// Closed-form WGS84 geodetic → geocentric (ECEF), the textbook
+/// definitional transform:
+///   e² = f(2−f);  N = a / √(1 − e² sin²φ)
+///   X = (N+h) cosφ cosλ;  Y = (N+h) cosφ sinλ;  Z = (N(1−e²)+h) sinφ
+/// φ = latitude, λ = longitude (both radians), h = ellipsoidal height (m).
+fn closed_form_wgs84_ecef(lon_deg: f64, lat_deg: f64, h: f64) -> [f64; 3] {
+    let e2 = WGS84_F * (2.0 - WGS84_F);
+    let (lon, lat) = (lon_deg.to_radians(), lat_deg.to_radians());
+    let (sphi, cphi) = lat.sin_cos();
+    let (slam, clam) = lon.sin_cos();
+    let n = WGS84_A / (1.0 - e2 * sphi * sphi).sqrt();
+    [
+        (n + h) * cphi * clam,
+        (n + h) * cphi * slam,
+        (n * (1.0 - e2) + h) * sphi,
+    ]
+}
+
+/// MT1 (substantive) — closed-form WGS84 geographic→ECEF oracle.
+///
+/// The originally-blocked MT1 was "the geographic path needs a frozen
+/// cs2cs parity fixture from a PROJ machine." But for a **WGS84**
+/// geographic source (EPSG:4326 → EPSG:4978) the transform is pure
+/// closed-form geodetic↔geocentric on a *single datum* — no grid shift,
+/// no projection — so the WGS84 ellipsoid equations are the
+/// **definitional** ground truth: `cs2cs` would compute the same numbers,
+/// and this independent formula is emphatically NOT proj4rs checking
+/// proj4rs. This gives MT1's substantive coverage (the degrees→radians /
+/// lon-lat-order geographic path, ADR-041 C1) with no PROJ machine,
+/// asserted to 1 mm.
+///
+/// The genuine PROJ-machine remainder is a **non-WGS84 datum** tie — e.g.
+/// NAD83/GRS80 (EPSG:4269) → 4978, which carries a datum shift (~1–2 m)
+/// that is not closed-form here. That single fixture stays blocked on a
+/// PROJ-9.x capture; the WGS84 geographic path no longer is.
+#[test]
+fn wgs84_geographic_to_ecef_matches_closed_form_within_1mm() {
+    let rp = Reprojector::new(SourceCrs::new(4326)).expect("EPSG:4326 must be in catalogue");
+    // (lon_deg, lat_deg, h_m): equator/prime-meridian, mid-lat eastern,
+    // near-pole, southern+western hemisphere, and a below-ellipsoid height.
+    let points = [
+        [0.0, 0.0, 0.0],
+        [18.2912, 49.0305, 175.0],
+        [0.0, 89.5, 1000.0],
+        [-70.6, -33.4, 500.0],
+        [140.0, -12.3, -50.0],
+    ];
+    const TOL_M: f64 = 1.0e-3;
+    for p in points {
+        let got = rp.to_ecef(p).expect("in-domain geographic point");
+        let want = closed_form_wgs84_ecef(p[0], p[1], p[2]);
+        for (axis, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            let delta = (g - w).abs();
+            assert!(
+                delta < TOL_M,
+                "point {p:?} axis {axis}: got {g} want {w} (Δ {delta} m, tol {TOL_M} m)"
+            );
+        }
     }
 }
