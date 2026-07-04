@@ -20,15 +20,26 @@ use crate::error::CrsError;
 const EPSG_ECEF: u16 = 4978;
 const EPSG_WGS84: u16 = 4326;
 
-/// Minimum plausible radius (metres) for a georeferenced ECEF surface
-/// anchor. Earth's polar radius is ~6.357e6 m; the deepest ocean trench
-/// is ~11 km below the ellipsoid, so any genuine surface/near-surface
-/// point has `|ecef| ≳ 6.345e6 m`. A radius below this floor means the
-/// input is degenerate — the geocenter `[0,0,0]`, a deep-interior point,
-/// or an ENU-local value fed in as ECEF by mistake — not a real anchor.
-/// proj4rs's geocentric inverse does NOT reject such points (it maps
-/// `[0,0,0]` to the north pole), so we guard here (F2).
+/// Plausible-Earth-surface radius band (metres) for a georeferenced ECEF
+/// origin. The guard rejects any origin whose radius falls **outside**
+/// `[MIN_ECEF_RADIUS_M, MAX_ECEF_RADIUS_M]`.
+///
+/// Lower floor (`6.2e6`): Earth's polar radius is ~6.357e6 m and the
+/// deepest ocean trench is ~11 km below the ellipsoid, so any genuine
+/// surface/near-surface point has `|ecef| ≳ 6.345e6 m`. A radius below
+/// the floor means a degenerate origin — the geocenter `[0,0,0]`, a
+/// deep-interior point, or an ENU-local value fed in as ECEF by mistake.
+///
+/// Upper bound (`6.6e6`): the equatorial radius is ~6.378e6 m; +6.6e6
+/// still admits ~220 km of altitude (high terrain, aircraft, even low
+/// balloon/UAV surveys) but rejects a gross scale-up units error — the
+/// silent-scale-error hole a lower-only floor left open (R2). A ×1000
+/// mistake (millimetres treated as metres) inflates the radius to
+/// ~6.4e9 m, which proj4rs's geocentric inverse would still map to a
+/// valid-looking frame at the wrong place. proj4rs rejects neither the
+/// too-small nor the too-large case, so we guard both here.
 const MIN_ECEF_RADIUS_M: f64 = 6.2e6;
+const MAX_ECEF_RADIUS_M: f64 = 6.6e6;
 
 /// The ECEF (EPSG:4978) and WGS84 (EPSG:4326) `Proj` objects for the
 /// `ecef_to_geodetic_lonlat` transform, built once. Both codes are fixed
@@ -68,10 +79,13 @@ pub fn ecef_to_geodetic_lonlat(ecef: [f64; 3]) -> Result<(f64, f64), CrsError> {
         )));
     }
     let radius = (ecef[0] * ecef[0] + ecef[1] * ecef[1] + ecef[2] * ecef[2]).sqrt();
-    if radius < MIN_ECEF_RADIUS_M {
+    if !(MIN_ECEF_RADIUS_M..=MAX_ECEF_RADIUS_M).contains(&radius) {
         return Err(CrsError::reproject(format!(
-            "degenerate ECEF origin ({}, {}, {}): radius {radius} m is below the \
-             {MIN_ECEF_RADIUS_M} m minimum for a georeferenced surface anchor",
+            "ECEF origin ({}, {}, {}) radius {radius} m is outside the plausible \
+             Earth-surface range [{MIN_ECEF_RADIUS_M}, {MAX_ECEF_RADIUS_M}] m — \
+             a degenerate origin (geocenter/interior) if too small, or a dataset \
+             too large for a single ENU frame / a wrong scale or units \
+             (e.g. mm treated as m) if too large",
             ecef[0], ecef[1], ecef[2]
         )));
     }
@@ -238,6 +252,33 @@ mod tests {
         }
         // A genuine surface anchor still succeeds.
         assert!(ecef_to_geodetic_lonlat(sample_ecef()).is_ok());
+    }
+
+    #[test]
+    fn implausibly_large_radius_is_rejected() {
+        // R2: the lower floor alone let a scale-up units error through — a
+        // ×1000 mistake (mm read as m) blows the radius to ~6.4e9 m yet
+        // produced a valid-looking frame, the exact silent-wrong-coordinate
+        // class the guard exists to catch. A symmetric upper bound closes it.
+        let anchor = sample_ecef(); // real surface point, radius ~6.37e6
+        assert!(EnuFrame::from_ecef_origin(anchor).is_ok(), "surface anchor");
+        // High-altitude anchor (~120 km up, radius ~6.49e6) must still pass.
+        let high = ecef_of(18.2906, 49.0297, 120_000.0);
+        assert!(
+            EnuFrame::from_ecef_origin(high).is_ok(),
+            "120 km-altitude anchor must still pass"
+        );
+        // ×1000 scale error → radius ~6.4e9 m → must now be rejected.
+        let scaled = [anchor[0] * 1000.0, anchor[1] * 1000.0, anchor[2] * 1000.0];
+        assert!(
+            EnuFrame::from_ecef_origin(scaled).is_err(),
+            "×1000 scale error must be rejected"
+        );
+        let msg = ecef_to_geodetic_lonlat(scaled).unwrap_err().to_string();
+        assert!(
+            msg.contains("range") && (msg.contains("scale") || msg.contains("units")),
+            "message must be actionable (name the plausible range + scale/units cause): {msg}"
+        );
     }
 
     #[test]
