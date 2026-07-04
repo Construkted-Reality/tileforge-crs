@@ -10,6 +10,8 @@
 //! first three columns are the East/North/Up basis vectors and the fourth is
 //! the ECEF origin, so `M · [x,y,z,1]ᵀ_localENU = ECEF`.
 
+use std::sync::LazyLock;
+
 use proj4rs::Proj;
 use proj4rs::transform::transform;
 
@@ -27,6 +29,22 @@ const EPSG_WGS84: u16 = 4326;
 /// proj4rs's geocentric inverse does NOT reject such points (it maps
 /// `[0,0,0]` to the north pole), so we guard here (F2).
 const MIN_ECEF_RADIUS_M: f64 = 6.2e6;
+
+/// The ECEF (EPSG:4978) and WGS84 (EPSG:4326) `Proj` objects for the
+/// `ecef_to_geodetic_lonlat` transform, built once. Both codes are fixed
+/// and always present in `crs-definitions`, but `Proj::from_epsg_code`
+/// returns a `Result`, so the (compile-time-guaranteed) error is stored
+/// and re-surfaced per call rather than panicked (F4) — keeping the
+/// crate's "no panic, propagate the tracing trail" convention. Previously
+/// both were re-parsed from the proj4 catalogue on every call (~1 µs).
+static ECEF_PROJ: LazyLock<Result<Proj, CrsError>> = LazyLock::new(|| {
+    Proj::from_epsg_code(EPSG_ECEF)
+        .map_err(|e| CrsError::unknown_epsg(format!("EPSG:{EPSG_ECEF} missing: {e:?}")))
+});
+static WGS84_PROJ: LazyLock<Result<Proj, CrsError>> = LazyLock::new(|| {
+    Proj::from_epsg_code(EPSG_WGS84)
+        .map_err(|e| CrsError::unknown_epsg(format!("EPSG:{EPSG_WGS84} missing: {e:?}")))
+});
 
 #[inline]
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -57,12 +75,10 @@ pub fn ecef_to_geodetic_lonlat(ecef: [f64; 3]) -> Result<(f64, f64), CrsError> {
             ecef[0], ecef[1], ecef[2]
         )));
     }
-    let from = Proj::from_epsg_code(EPSG_ECEF)
-        .map_err(|e| CrsError::unknown_epsg(format!("EPSG:{EPSG_ECEF} missing: {e:?}")))?;
-    let to = Proj::from_epsg_code(EPSG_WGS84)
-        .map_err(|e| CrsError::unknown_epsg(format!("EPSG:{EPSG_WGS84} missing: {e:?}")))?;
+    let from = ECEF_PROJ.as_ref().map_err(|e| e.clone())?;
+    let to = WGS84_PROJ.as_ref().map_err(|e| e.clone())?;
     let mut p = (ecef[0], ecef[1], ecef[2]);
-    transform(&from, &to, &mut p).map_err(|e| {
+    transform(from, to, &mut p).map_err(|e| {
         CrsError::reproject(format!(
             "ECEF→WGS84 for ({}, {}, {}) failed: {e:?}",
             ecef[0], ecef[1], ecef[2]
