@@ -18,6 +18,16 @@ use crate::error::CrsError;
 const EPSG_ECEF: u16 = 4978;
 const EPSG_WGS84: u16 = 4326;
 
+/// Minimum plausible radius (metres) for a georeferenced ECEF surface
+/// anchor. Earth's polar radius is ~6.357e6 m; the deepest ocean trench
+/// is ~11 km below the ellipsoid, so any genuine surface/near-surface
+/// point has `|ecef| ≳ 6.345e6 m`. A radius below this floor means the
+/// input is degenerate — the geocenter `[0,0,0]`, a deep-interior point,
+/// or an ENU-local value fed in as ECEF by mistake — not a real anchor.
+/// proj4rs's geocentric inverse does NOT reject such points (it maps
+/// `[0,0,0]` to the north pole), so we guard here (F2).
+const MIN_ECEF_RADIUS_M: f64 = 6.2e6;
+
 #[inline]
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -27,6 +37,26 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// proj4rs EPSG:4978 → EPSG:4326. Returns `(lon_rad, lat_rad)` (proj4rs
 /// emits geographic coordinates as `(lon, lat)` in radians).
 pub fn ecef_to_geodetic_lonlat(ecef: [f64; 3]) -> Result<(f64, f64), CrsError> {
+    // Reject degenerate / non-finite origins (F2). proj4rs's geocentric
+    // inverse silently maps the geocenter and deep-interior points to a
+    // "valid" pole/near-pole answer and passes NaN straight through,
+    // which would anchor a whole tileset at the wrong place with no error
+    // anywhere. A real georeferenced ECEF point sits on/near the ellipsoid
+    // surface; guard both non-finite input and an implausibly small radius.
+    if !ecef.iter().all(|c| c.is_finite()) {
+        return Err(CrsError::reproject(format!(
+            "non-finite ECEF origin ({}, {}, {})",
+            ecef[0], ecef[1], ecef[2]
+        )));
+    }
+    let radius = (ecef[0] * ecef[0] + ecef[1] * ecef[1] + ecef[2] * ecef[2]).sqrt();
+    if radius < MIN_ECEF_RADIUS_M {
+        return Err(CrsError::reproject(format!(
+            "degenerate ECEF origin ({}, {}, {}): radius {radius} m is below the \
+             {MIN_ECEF_RADIUS_M} m minimum for a georeferenced surface anchor",
+            ecef[0], ecef[1], ecef[2]
+        )));
+    }
     let from = Proj::from_epsg_code(EPSG_ECEF)
         .map_err(|e| CrsError::unknown_epsg(format!("EPSG:{EPSG_ECEF} missing: {e:?}")))?;
     let to = Proj::from_epsg_code(EPSG_WGS84)
@@ -154,12 +184,90 @@ mod tests {
     // A point near Žilina, Slovakia (the ADR-041 driver model centroid):
     // lon 18.2906°, lat 49.0297°, h ~178 m. Its ECEF, from proj4rs.
     fn sample_ecef() -> [f64; 3] {
-        // lon/lat → ECEF via proj4rs (4326→4978), radians in.
+        ecef_of(18.2906, 49.0297, 178.0)
+    }
+
+    /// lon/lat (degrees) + height → ECEF via proj4rs (4326→4978).
+    fn ecef_of(lon_deg: f64, lat_deg: f64, h: f64) -> [f64; 3] {
         let from = Proj::from_epsg_code(EPSG_WGS84).unwrap();
         let to = Proj::from_epsg_code(EPSG_ECEF).unwrap();
-        let mut p = (18.2906_f64.to_radians(), 49.0297_f64.to_radians(), 178.0);
+        let mut p = (lon_deg.to_radians(), lat_deg.to_radians(), h);
         transform(&from, &to, &mut p).unwrap();
         [p.0, p.1, p.2]
+    }
+
+    #[test]
+    fn degenerate_or_non_finite_origin_is_rejected() {
+        // F2: proj4rs's geocentric inverse maps [0,0,0] to the north pole
+        // and passes NaN through as Ok((NaN, NaN)). Both the low-level
+        // ecef_to_geodetic_lonlat and EnuFrame::from_ecef_origin must
+        // reject degenerate + non-finite origins instead.
+        let bad_origins = [
+            [0.0, 0.0, 0.0],                              // geocenter → pole
+            [1.0, 1.0, 1.0],                              // deep interior
+            [f64::NAN, 0.0, 0.0],                         // non-finite
+            [0.0, f64::INFINITY, 0.0],                    // non-finite
+            [1.0e6, 1.0e6, 1.0e6],                        // radius ~1.7e6 m
+            [f64::NEG_INFINITY, f64::NAN, f64::INFINITY], // fully non-finite
+        ];
+        for o in bad_origins {
+            assert!(
+                ecef_to_geodetic_lonlat(o).is_err(),
+                "ecef_to_geodetic_lonlat({o:?}) must be rejected"
+            );
+            assert!(
+                EnuFrame::from_ecef_origin(o).is_err(),
+                "from_ecef_origin({o:?}) must be rejected"
+            );
+        }
+        // A genuine surface anchor still succeeds.
+        assert!(ecef_to_geodetic_lonlat(sample_ecef()).is_ok());
+    }
+
+    #[test]
+    fn ecef_to_geodetic_lonlat_recovers_known_lon_lat() {
+        // MT4: direct value assert. ecef_to_geodetic_lonlat is the exact
+        // inverse of the 4326→4978 forward transform, so a Seattle point
+        // must round-trip to its input lon/lat.
+        let (lon_deg, lat_deg, h) = (-122.3321_f64, 47.6062_f64, 56.0);
+        let (lon, lat) = ecef_to_geodetic_lonlat(ecef_of(lon_deg, lat_deg, h)).unwrap();
+        assert!(
+            (lon.to_degrees() - lon_deg).abs() < 1e-9,
+            "lon: got {}",
+            lon.to_degrees()
+        );
+        assert!(
+            (lat.to_degrees() - lat_deg).abs() < 1e-9,
+            "lat: got {}",
+            lat.to_degrees()
+        );
+    }
+
+    #[test]
+    fn basis_is_orthonormal_at_extreme_anchors() {
+        // MT4: the four ENU tests otherwise use a single mid-northern
+        // point. Sweep poles, both hemispheres, and the antimeridian.
+        let anchors = [
+            (0.0, 89.9, 0.0),      // near north pole
+            (10.0, -89.9, 0.0),    // near south pole
+            (-122.4, 47.6, 500.0), // northern + western
+            (-70.6, -33.4, 500.0), // southern + western (Santiago)
+            (180.0, 0.0, 0.0),     // antimeridian, equator
+            (179.9, -45.0, 0.0),   // antimeridian, southern
+        ];
+        for (lon, lat, h) in anchors {
+            let f = EnuFrame::from_ecef_origin(ecef_of(lon, lat, h))
+                .unwrap_or_else(|e| panic!("frame at ({lon},{lat},{h}): {e}"));
+            for v in [f.east, f.north, f.up] {
+                assert!(
+                    (dot(v, v) - 1.0).abs() < 1e-9,
+                    "unit length at ({lon},{lat})"
+                );
+            }
+            assert!(dot(f.east, f.north).abs() < 1e-9, "E·N at ({lon},{lat})");
+            assert!(dot(f.east, f.up).abs() < 1e-9, "E·U at ({lon},{lat})");
+            assert!(dot(f.north, f.up).abs() < 1e-9, "N·U at ({lon},{lat})");
+        }
     }
 
     #[test]
