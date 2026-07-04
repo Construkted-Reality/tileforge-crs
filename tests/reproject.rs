@@ -195,3 +195,65 @@ fn wgs84_geographic_to_ecef_matches_closed_form_within_1mm() {
         }
     }
 }
+
+/// Test-gap fill: the geographic path's clean out-of-range-latitude
+/// behaviour has two modes by build profile, and this pins both.
+///
+/// In a **debug** build the F5 `debug_assert!(|lat| ≤ 90)` fires first
+/// for `|lat| > 90` (the likely lon/lat-swap tripwire) and panics with a
+/// hint — asserted here via `#[should_panic]`.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "lon_deg, lat_deg")]
+fn latitude_over_90_trips_debug_assert() {
+    let rp = Reprojector::new(SourceCrs::new(4326)).unwrap();
+    let _ = rp.to_ecef([0.0, 100.0, 0.0]);
+}
+
+/// In a **release** build the `debug_assert` is compiled out, so an
+/// out-of-range latitude reaches proj4rs, which returns a clean,
+/// handleable error (`CrsError::Reproject` wrapping proj4rs's
+/// `LatitudeOutOfRange`) — the contract consumers rely on rather than a
+/// panic. Run with `cargo test --release`.
+#[test]
+#[cfg(not(debug_assertions))]
+fn latitude_over_90_is_clean_error_in_release() {
+    let rp = Reprojector::new(SourceCrs::new(4326)).unwrap();
+    let err = rp
+        .to_ecef([0.0, 100.0, 0.0])
+        .expect_err("|lat| > 90 must be a clean error, not Ok");
+    match &err {
+        CrsError::Reproject(msg) => assert!(
+            msg.to_lowercase().contains("latitude"),
+            "expected a latitude-out-of-range message, got: {msg}"
+        ),
+        other => panic!("expected CrsError::Reproject(LatitudeOutOfRange), got {other:?}"),
+    }
+}
+
+/// Test-gap fill: latitude at exactly the ±90° pole boundary must
+/// reproject cleanly (finite, no panic — the `debug_assert` uses `≤ 90`,
+/// so 90.0 is in-range). At the pole X≈Y≈0 and |Z| = the WGS84 polar
+/// semi-minor axis b = 6356752.314245 m.
+#[test]
+fn poles_at_exactly_90_degrees_are_finite() {
+    let rp = Reprojector::new(SourceCrs::new(4326)).unwrap();
+    const WGS84_B: f64 = 6_356_752.314_245;
+    for lat in [90.0_f64, -90.0] {
+        let out = rp
+            .to_ecef([0.0, lat, 0.0])
+            .unwrap_or_else(|e| panic!("pole {lat} must reproject: {e}"));
+        assert!(
+            out.iter().all(|c| c.is_finite()),
+            "pole {lat} → finite ECEF, got {out:?}"
+        );
+        assert!(
+            out[0].abs() < 1.0e-3 && out[1].abs() < 1.0e-3,
+            "pole {lat}: X,Y ≈ 0, got {out:?}"
+        );
+        assert!(
+            (out[2].abs() - WGS84_B).abs() < 1.0e-3,
+            "pole {lat}: |Z| ≈ b, got {out:?}"
+        );
+    }
+}

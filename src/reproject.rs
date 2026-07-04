@@ -84,6 +84,15 @@ impl Reprojector {
     /// (`|lon| ≤ 180` is intentionally *not* asserted — proj4rs wraps
     /// longitude, so 190°E is valid).
     ///
+    /// **Accepted residual risk (R1).** The tripwire only catches a swap
+    /// that pushes latitude out of range. A swap where **both** values are
+    /// ≤ 90° in magnitude (e.g. `[lat 45, lon 12]` fed as `[45, 12]`) is
+    /// numerically indistinguishable from a valid `[lon 45, lat 12]` and is
+    /// **undetectable** — the `debug_assert` cannot catch it, and in release
+    /// it produces plausible-looking output at the wrong place with no
+    /// error. This is an inherent, documented residual of axis-order
+    /// ambiguity, not a resolved bug: **callers MUST pass `[lon, lat, h]`.**
+    ///
     /// Identity (source EPSG == 4978) short-circuits without calling
     /// proj4rs, which keeps the bit-equal semantics the integration
     /// tests rely on.
