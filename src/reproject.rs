@@ -73,7 +73,23 @@ impl Reprojector {
     /// Identity (source EPSG == 4978) short-circuits without calling
     /// proj4rs, which keeps the bit-equal semantics the integration
     /// tests rely on.
+    ///
+    /// Non-finite input (`NaN`, `±inf` on any axis) is rejected with
+    /// [`CrsError::Reproject`] on **every** source kind — geographic,
+    /// projected, and identity — before any transform (F1). proj4rs
+    /// validates latitude but lets a non-finite longitude/height pass
+    /// straight through for geographic sources (returning `Ok([NaN, …])`),
+    /// and the identity short-circuit would copy a `NaN` through verbatim;
+    /// either way one poisoned vertex silently corrupts every downstream
+    /// bbox/centroid. This crate exists to make that failure loud, so the
+    /// finite check runs uniformly ahead of the identity short-circuit.
     pub fn to_ecef(&self, xyz: [f64; 3]) -> Result<[f64; 3], CrsError> {
+        if !xyz.iter().all(|c| c.is_finite()) {
+            return Err(CrsError::reproject(format!(
+                "non-finite input coordinate ({}, {}, {}) for EPSG:{} → EPSG:{EPSG_ECEF}",
+                xyz[0], xyz[1], xyz[2], self.source_epsg
+            )));
+        }
         if self.is_identity() {
             return Ok(xyz);
         }
@@ -218,6 +234,28 @@ mod tests {
             (lat_r.to_degrees() - lat_deg).abs() < 1e-6,
             "lat round-trip"
         );
+    }
+
+    #[test]
+    fn non_finite_input_is_rejected() {
+        // Silent-corruption defense (F1 / MT3): a NaN or ±inf input
+        // coordinate must error, never pass through as `Ok([NaN, …])`.
+        // Covers each axis × {NaN, +inf, -inf} × {geographic 4326,
+        // projected 32617, identity 4978}.
+        for epsg in [4326_u16, 32617, 4978] {
+            let rp = Reprojector::new(SourceCrs::new(epsg)).expect("in catalogue");
+            for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                for axis in 0..3 {
+                    let mut xyz = [10.0_f64, 45.0, 0.0];
+                    xyz[axis] = bad;
+                    let got = rp.to_ecef(xyz);
+                    assert!(
+                        got.is_err(),
+                        "EPSG:{epsg} axis {axis} = {bad} must be rejected, got {got:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
