@@ -10,6 +10,29 @@ revision, not by version, so a version bump here does not by itself break them.
 
 ## [Unreleased]
 
+### Changed
+
+- **`parse_crs_string` / `parse_crs_string_epsg` now reject the GeoTIFF reserved
+  sentinels `EPSG:0` and `EPSG:32767`.** Per the GeoTIFF spec these are not EPSG
+  codes but a declaration of "no standard CRS"; the parser previously handed them
+  back as `Ok(0)` / `Ok(32767)`, pushing the not-a-real-code decision onto every
+  caller. They are now rejected with the new structured `CrsError::SentinelCode(u16)`
+  variant (carrying the sentinel value). The private/user range `32768..` is
+  unaffected and still parses. The exported
+  [`is_geotiff_sentinel`] helper remains available for consumers that need to
+  detect-then-handle a sentinel as absence (fall through to a local frame).
+  (Contract tightening: previously-`Ok` sentinel input is now `Err`. Finding F3.)
+  `detect_crs_from_sidecar` is unchanged: a `.prj`/`.qpj` declaring a sentinel is
+  a valid "no CRS" declaration, so it still resolves to `Ok(Some(SidecarCrs { epsg:
+  0 | 32767, .. }))` and leaves the absence policy to the caller — it does **not**
+  become a parse error.
+
+### Added
+
+- **`CrsError::SentinelCode(u16)`** — a CRS string parsed to a GeoTIFF reserved
+  sentinel. New variant; existing consumers map `CrsError` via `to_string` / a
+  non-exhaustive `matches!` and are unaffected.
+
 ## [0.2.0] - 2026-07-04
 
 Review-remediation release. Hardens the error surface so invalid input fails

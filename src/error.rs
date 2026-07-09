@@ -16,6 +16,9 @@
 //!   a point.
 //! - [`CrsError::Parse`] — a CRS string / WKT body failed to parse into
 //!   an EPSG code (`parse_crs_string`, `extract_epsg_from_wkt`).
+//! - [`CrsError::SentinelCode`] — a CRS string parsed to a GeoTIFF reserved
+//!   sentinel (`0` / `32767`), which is *not* a resolvable CRS code but a
+//!   declaration of "no standard CRS" (`parse_crs_string`).
 //! - [`CrsError::Io`] — reading a sidecar `.prj` / `.qpj` file failed
 //!   (`detect_crs_from_sidecar`).
 
@@ -35,6 +38,21 @@ pub enum CrsError {
     /// A CRS string or WKT body failed to parse into an EPSG code.
     #[error("{0}")]
     Parse(String),
+
+    /// A CRS string parsed to a GeoTIFF reserved sentinel code (`0` =
+    /// "undefined", `32767` = "user-defined"). Per the GeoTIFF spec these
+    /// are **not** EPSG codes — they declare "I have no standard CRS", not a
+    /// projection — so the parser rejects them rather than handing back a
+    /// non-resolvable code. Consumers that treat a sentinel as *absence*
+    /// (fall through to a local frame) should match this variant and/or use
+    /// [`is_geotiff_sentinel`](crate::is_geotiff_sentinel). Carries the
+    /// sentinel value that was seen.
+    #[error(
+        "EPSG:{0} is a GeoTIFF reserved sentinel (0 = undefined, 32767 = \
+         user-defined), not a resolvable coordinate reference system; treat \
+         it as 'no CRS' (absence), do not pass it to the proj4 catalogue"
+    )]
+    SentinelCode(u16),
 
     /// An I/O error reading a sidecar `.prj` / `.qpj` file. Carries the
     /// path and the underlying message so consumers can re-tag it as
@@ -57,6 +75,11 @@ impl CrsError {
     /// Construct a [`CrsError::Parse`].
     pub fn parse(msg: impl Into<String>) -> Self {
         Self::Parse(msg.into())
+    }
+
+    /// Construct a [`CrsError::SentinelCode`] from the sentinel value seen.
+    pub fn sentinel_code(epsg: u16) -> Self {
+        Self::SentinelCode(epsg)
     }
 
     /// Construct a [`CrsError::Io`] from a path and an underlying error.

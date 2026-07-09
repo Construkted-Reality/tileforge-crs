@@ -25,6 +25,7 @@
 use std::path::Path;
 
 use crate::error::CrsError;
+use crate::reproject::is_geotiff_sentinel;
 use crate::wkt::extract_epsg_from_wkt;
 
 /// Filename suffixes tried in order. `.prj` is the GIS canonical (ESRI,
@@ -76,12 +77,27 @@ pub fn detect_crs_from_sidecar(input: &Path) -> Result<Option<SidecarCrs>, CrsEr
         }
         let body = std::fs::read_to_string(&candidate)
             .map_err(|e| CrsError::io(&candidate, format!("read CRS sidecar: {e}")))?;
-        let parsed = parse_crs_string(body.trim()).map_err(|e| {
-            CrsError::parse(format!(
-                "CRS sidecar {} is not parseable: {e}",
-                candidate.display()
-            ))
-        })?;
+        let parsed = match parse_crs_string(body.trim()) {
+            Ok(p) => p,
+            // A sidecar declaring a GeoTIFF sentinel (0 / 32767) is not a
+            // parse failure — it is a valid "no standard CRS" declaration.
+            // `parse_crs_string` now rejects sentinels (they are not
+            // resolvable codes), but a sidecar's job is to report what the
+            // file declares, so surface the sentinel as a resolved
+            // `SidecarCrs`. The caller applies its own absence policy (e.g.
+            // `is_geotiff_sentinel` → fall through to a local frame),
+            // exactly as before the parser began rejecting sentinels.
+            Err(CrsError::SentinelCode(epsg)) => ParsedCrs {
+                epsg,
+                vertical_stripped: false,
+            },
+            Err(e) => {
+                return Err(CrsError::parse(format!(
+                    "CRS sidecar {} is not parseable: {e}",
+                    candidate.display()
+                )));
+            }
+        };
         return Ok(Some(SidecarCrs {
             epsg: parsed.epsg,
             vertical_stripped: parsed.vertical_stripped,
@@ -105,25 +121,41 @@ pub fn detect_crs_from_sidecar(input: &Path) -> Result<Option<SidecarCrs>, CrsEr
 /// and the E57 reader's `coordinateMetadata` ingest. Callers should
 /// pass an already-trimmed string. Errors with a single message naming
 /// both supported forms; callers wrap with source-specific context.
+///
+/// # Sentinel rejection
+///
+/// A body that resolves to a GeoTIFF reserved sentinel (`EPSG:0` /
+/// `EPSG:32767`, or a WKT whose authority code is one of those) is
+/// **rejected** with [`CrsError::SentinelCode`] — a sentinel is not a
+/// resolvable CRS code but a declaration of "no standard CRS". Consumers
+/// that treat a sentinel as *absence* (fall through to a local frame) should
+/// match that variant and/or pre-check with
+/// [`is_geotiff_sentinel`](crate::is_geotiff_sentinel), rather than feed the
+/// value to [`Reprojector::new`](crate::Reprojector::new) / the proj4
+/// catalogue.
 pub fn parse_crs_string(body: &str) -> Result<ParsedCrs, CrsError> {
     if let Some(epsg) = parse_short_form_epsg(body) {
+        if is_geotiff_sentinel(epsg) {
+            return Err(CrsError::sentinel_code(epsg));
+        }
         return Ok(ParsedCrs {
             epsg,
             vertical_stripped: false,
         });
     }
-    extract_epsg_from_wkt(body)
-        .map(|e| ParsedCrs {
-            epsg: e.epsg,
-            vertical_stripped: e.vertical_stripped,
-        })
-        .map_err(|e| {
-            CrsError::parse(format!(
-                "expected `EPSG:NNNNN` short form or OGC WKT \
-                 `PROJCS[...]` / `GEOGCS[...]` / `GEOCCS[...]` / \
-                 `COMPD_CS[...]`; WKT parse error: {e}"
-            ))
-        })
+    let parsed = extract_epsg_from_wkt(body).map(|e| ParsedCrs {
+        epsg: e.epsg,
+        vertical_stripped: e.vertical_stripped,
+    });
+    match parsed {
+        Ok(p) if is_geotiff_sentinel(p.epsg) => Err(CrsError::sentinel_code(p.epsg)),
+        Ok(p) => Ok(p),
+        Err(e) => Err(CrsError::parse(format!(
+            "expected `EPSG:NNNNN` short form or OGC WKT \
+             `PROJCS[...]` / `GEOGCS[...]` / `GEOCCS[...]` / \
+             `COMPD_CS[...]`; WKT parse error: {e}"
+        ))),
+    }
 }
 
 /// Convenience wrapper over [`parse_crs_string`] returning just the
@@ -303,5 +335,56 @@ mod tests {
     fn parse_crs_string_epsg_convenience_returns_bare_code() {
         assert_eq!(parse_crs_string_epsg(KINGSTON_WKT).unwrap(), 32617);
         assert_eq!(parse_crs_string_epsg("EPSG:26917").unwrap(), 26917);
+    }
+
+    #[test]
+    fn parse_crs_string_rejects_geotiff_sentinels_short_form() {
+        // F3: `EPSG:0` / `EPSG:32767` are GeoTIFF "no CRS" sentinels, not
+        // resolvable codes. The parser must reject them with the structured
+        // `SentinelCode` variant (carrying the value) rather than returning
+        // `Ok(0)` / `Ok(32767)`.
+        for code in [0u16, 32767] {
+            let err = parse_crs_string(&format!("EPSG:{code}")).unwrap_err();
+            assert_eq!(
+                err,
+                CrsError::SentinelCode(code),
+                "EPSG:{code} must be rejected as a sentinel"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_crs_string_epsg_rejects_geotiff_sentinels() {
+        // The bare-code convenience wrapper inherits the rejection.
+        for code in [0u16, 32767] {
+            let err = parse_crs_string_epsg(&format!("EPSG:{code}")).unwrap_err();
+            assert_eq!(err, CrsError::SentinelCode(code));
+        }
+    }
+
+    #[test]
+    fn parse_crs_string_still_accepts_private_range_above_sentinel() {
+        // 32768.. is the implementation-defined user range, NOT a sentinel;
+        // it must still parse (and later fail as an unknown EPSG, not here).
+        let p = parse_crs_string("EPSG:32768").unwrap();
+        assert_eq!(p.epsg, 32768);
+    }
+
+    #[test]
+    fn sidecar_declaring_sentinel_resolves_to_sentinel_not_parse_error() {
+        // A `.prj` carrying `EPSG:0` (or 32767) is a valid "no CRS"
+        // declaration, not a malformed sidecar: `detect_crs_from_sidecar`
+        // surfaces the sentinel as a resolved `SidecarCrs` (Ok(Some(..))) so
+        // the caller can apply its own absence policy. It must NOT become a
+        // `CrsError::parse` "not parseable" error.
+        for code in [0u16, 32767] {
+            let ply = write_tmp(&format!("sentinel-{code}.ply"), "ply\n");
+            let prj = ply.with_extension("prj");
+            std::fs::write(&prj, format!("EPSG:{code}")).unwrap();
+            let r = detect_crs_from_sidecar(&ply).unwrap().unwrap();
+            assert_eq!(r.epsg, code);
+            assert!(is_geotiff_sentinel(r.epsg));
+            assert!(!r.vertical_stripped);
+        }
     }
 }
