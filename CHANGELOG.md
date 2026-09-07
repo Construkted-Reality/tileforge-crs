@@ -12,6 +12,8 @@ revision, not by version, so a version bump here does not by itself break them.
 
 ### Changed
 
+- Reject WKT BOUNDCRS and TOWGS84 definitions instead of discarding their explicit datum transformation. Reproject such data with the declared operation before conversion.
+
 - **`parse_crs_string` / `parse_crs_string_epsg` now reject the GeoTIFF reserved
   sentinels `EPSG:0` and `EPSG:32767`.** Per the GeoTIFF spec these are not EPSG
   codes but a declaration of "no standard CRS"; the parser previously handed them
