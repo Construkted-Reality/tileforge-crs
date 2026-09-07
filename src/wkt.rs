@@ -10,15 +10,15 @@
 //! Supported root blocks — both **WKT1** and **WKT2** (LAS 1.4 producers
 //! increasingly emit WKT2):
 //! - WKT1: `PROJCS`, `GEOGCS`, `GEOCCS`, `COMPD_CS`.
-//! - WKT2: `PROJCRS`, `GEOGCRS`, `GEODCRS`, `COMPOUNDCRS`, `BOUNDCRS`.
+//! - WKT2: `PROJCRS`, `GEOGCRS`, `GEODCRS`, `COMPOUNDCRS`.
 //!
 //! The EPSG code is read from the outermost authority clause, which is
 //! `AUTHORITY["EPSG","NNNN"]` in WKT1 and `ID["EPSG",NNNN]` (code often
 //! **unquoted**) in WKT2. For a compound CRS the scanner descends into the
 //! first horizontal subblock and reports the vertical component as stripped
 //! via `WktExtraction::vertical_stripped` — the caller decides what to do
-//! (PC ignores, mesh warns). For a `BOUNDCRS` (a CRS bundled with a datum
-//! transform) it descends into `SOURCECRS` and recurses.
+//! (PC ignores, mesh warns). BOUNDCRS and TOWGS84 operations are rejected
+//! because an EPSG code alone cannot preserve their explicit transformation.
 
 use crate::error::CrsError;
 
@@ -33,6 +33,7 @@ pub struct WktExtraction {
 
 /// Extract the EPSG code from a CRS WKT string.
 pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
+    reject_explicit_transforms(wkt)?;
     let bytes = wkt.as_bytes();
     let after_ws = skip_whitespace(bytes, 0);
     let (id, after_id) = read_identifier(bytes, after_ws).ok_or_else(|| {
@@ -67,16 +68,6 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
                 vertical_stripped: true,
             })
         }
-        // WKT2 BOUNDCRS wraps the real CRS in SOURCECRS (plus a datum
-        // transform to a target). The EPSG we want is the source CRS's.
-        "BOUNDCRS" => {
-            let source = find_child_block(body, &["SOURCECRS"])
-                .ok_or_else(|| CrsError::parse("BOUNDCRS has no SOURCECRS subblock".to_string()))?;
-            // `source` is `SOURCECRS[<crs>]`; its body is the wrapped CRS.
-            let inner_crs = block_body(source)
-                .ok_or_else(|| CrsError::parse("BOUNDCRS SOURCECRS is malformed".to_string()))?;
-            extract_epsg_from_wkt(inner_crs.trim())
-        }
         // Simple CRS that directly carries the authority/ID clause.
         // WKT1: PROJCS/GEOGCS/GEOCCS. WKT2: PROJCRS/GEOGCRS/GEODCRS.
         "PROJCS" | "GEOGCS" | "GEOCCS" | "PROJCRS" | "GEOGCRS" | "GEODCRS" => {
@@ -88,7 +79,7 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
         }
         _ => Err(CrsError::parse(format!(
             "WKT VLR root is unexpected '{id}' (want a WKT1 PROJCS/GEOGCS/GEOCCS/COMPD_CS \
-             or WKT2 PROJCRS/GEOGCRS/GEODCRS/COMPOUNDCRS/BOUNDCRS)"
+             or WKT2 PROJCRS/GEOGCRS/GEODCRS/COMPOUNDCRS)"
         ))),
     }
 }
@@ -100,13 +91,40 @@ const HORIZONTAL_KEYWORDS: &[&str] = &[
     "PROJCRS", "GEOGCRS", "GEODCRS", // WKT2
 ];
 
-/// Given a `KEYWORD[...]` substring, return the slice between its outer
-/// brackets (the block body), or `None` if malformed.
-fn block_body(block: &str) -> Option<&str> {
-    let bytes = block.as_bytes();
-    let open = bytes.iter().position(|&b| b == b'[')?;
-    let close = find_matching_bracket(bytes, open)?;
-    Some(&block[open + 1..close])
+/// Scan every nesting level without recursion. Quoted names are not keywords.
+fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
+    let bytes = wkt.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'"' {
+                    if bytes.get(i + 1) == Some(&b'"') {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+        } else if let Some((id, end)) = read_identifier(bytes, i) {
+            let next = skip_whitespace(bytes, end);
+            if bytes.get(next) == Some(&b'[')
+                && (id.eq_ignore_ascii_case("BOUNDCRS") || id.eq_ignore_ascii_case("TOWGS84"))
+            {
+                return Err(CrsError::parse(format!(
+                    "{} declares an explicit datum transformation that this EPSG-only parser cannot preserve; reproject the data with that transformation before conversion",
+                    id.to_ascii_uppercase()
+                )));
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
 }
 
 fn skip_whitespace(bytes: &[u8], mut i: usize) -> usize {
@@ -491,14 +509,19 @@ mod tests {
     }
 
     #[test]
-    fn wkt2_boundcrs_descends_into_sourcecrs() {
+    fn wkt2_boundcrs_is_rejected() {
         let wkt = r#"BOUNDCRS[
             SOURCECRS[GEOGCRS["unknown",DATUM["d",ELLIPSOID["GRS 1980",6378137,298.257222101]],
                 CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],ID["EPSG",4269]]],
             TARGETCRS[GEOGCRS["WGS 84",DATUM["WGS84",ELLIPSOID["WGS 84",6378137,298.257223563]],ID["EPSG",4326]]],
             ABRIDGEDTRANSFORMATION["NAD83 to WGS84",METHOD["Geocentric translations"],
                 PARAMETER["X",0,LENGTHUNIT["metre",1]]]]"#;
-        assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 4269);
+        assert!(
+            extract_epsg_from_wkt(wkt)
+                .unwrap_err()
+                .to_string()
+                .contains("BOUNDCRS")
+        );
     }
 
     #[test]
