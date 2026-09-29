@@ -10,6 +10,15 @@ revision, not by version, so a version bump here does not by itself break them.
 
 ## [Unreleased]
 
+### Added
+
+- Expose separate horizontal and vertical metre conversion factors. Geographic horizontal coordinates return no linear factor.
+
+### Fixed
+
+- Correct projected height documentation. Horizontal feet do not imply vertical feet; reprojection keeps the catalogue vertical unit.
+
+
 ### Changed
 
 - Reject WKT BOUNDCRS and TOWGS84 definitions instead of discarding their explicit datum transformation. Reproject such data with the declared operation before conversion.

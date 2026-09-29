@@ -1,3 +1,5 @@
+// ABOUTME: Checks reprojection placement against independent numerical controls.
+// ABOUTME: Pins separate horizontal and vertical units without rescaling heights.
 //! `Reprojector` numerical-correctness tests.
 //!
 //! Reference values come from spike `0g-crs-crate/SPIKE-0g.md`, which
@@ -256,4 +258,31 @@ fn poles_at_exactly_90_degrees_are_finite() {
             "pole {lat}: |Z| ≈ b, got {out:?}"
         );
     }
+}
+
+#[test]
+fn unit_contract_keeps_projected_height_independent() {
+    for (epsg, horizontal) in [(32617, 1.0), (2926, 1200.0 / 3937.0), (2222, 0.3048)] {
+        let rp = Reprojector::new(SourceCrs::new(epsg)).unwrap();
+        assert!((rp.horizontal_meters_per_unit().unwrap() - horizontal).abs() < 1e-12);
+        assert_eq!(rp.vertical_meters_per_unit(), 1.0);
+        let zero = rp.to_ecef([1266000.0, 230000.0, 0.0]).unwrap();
+        let high = rp.to_ecef([1266000.0, 230000.0, 100.0]).unwrap();
+        let change = zero
+            .into_iter()
+            .zip(high)
+            .map(|(a, b)| (b - a).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            (change - 100.0).abs() < 1e-6,
+            "EPSG:{epsg} height change {change}"
+        );
+    }
+    let geo = Reprojector::new(SourceCrs::new(4326)).unwrap();
+    assert_eq!(geo.horizontal_meters_per_unit(), None);
+    assert_eq!(geo.vertical_meters_per_unit(), 1.0);
+    let ecef = Reprojector::new(SourceCrs::ECEF).unwrap();
+    assert_eq!(ecef.horizontal_meters_per_unit(), Some(1.0));
+    assert_eq!(ecef.vertical_meters_per_unit(), 1.0);
 }

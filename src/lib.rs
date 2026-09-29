@@ -1,3 +1,5 @@
+// ABOUTME: Shares CRS policy, reprojection and coordinate unit contracts.
+// ABOUTME: Keeps format adapters and tool-specific error handling in consumers.
 //! `tileforge-crs` — the error-agnostic CRS core shared by
 //! `tileforge-pc` and `tileforge-mesh`.
 //!
@@ -14,7 +16,8 @@
 //!   **Axis order:** for a *geographic* source the input is
 //!   `[lon_deg, lat_deg, h_m]` — GIS/proj4 x=East, y=North order, in
 //!   degrees — **not** the EPSG-official lat,lon order. Projected sources
-//!   take native `[easting, northing, h]` in the CRS's linear unit.
+//!   use native horizontal units for easting/northing and the independent
+//!   vertical unit for height, usually metres. The unit accessors expose both.
 //! - [`parse_crs_string`] / [`parse_crs_string_epsg`] — parse a
 //!   `EPSG:NNNNN` short form or OGC WKT body into an EPSG code, with a
 //!   `vertical_stripped` flag for compound CRS.
