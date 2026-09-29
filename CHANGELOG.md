@@ -12,6 +12,10 @@ revision, not by version, so a version bump here does not by itself break them.
 
 ### Added
 
+- Expose the selected source CRS for consumers that must select a coordinate-bound policy.
+
+### Added
+
 - Expose separate horizontal and vertical metre conversion factors. Geographic horizontal coordinates return no linear factor.
 
 ### Fixed

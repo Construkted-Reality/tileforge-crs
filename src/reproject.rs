@@ -70,6 +70,11 @@ impl Reprojector {
         })
     }
 
+    /// Return the source coordinate reference system selected at construction.
+    pub fn source_crs(&self) -> SourceCrs {
+        SourceCrs::new(self.source_epsg)
+    }
+
     /// Reproject `[x, y, z]` from the source CRS to ECEF metres.
     ///
     /// **Axis order & units (lon/lat-swap hazard).** For a **geographic**
@@ -204,6 +209,17 @@ pub fn is_supported_epsg(epsg: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_crs_reports_the_selected_catalogue_entry() {
+        for epsg in [4326, 4978, 2926, 32617] {
+            let source = super::SourceCrs::new(epsg);
+            assert_eq!(
+                super::Reprojector::new(source).unwrap().source_crs(),
+                source
+            );
+        }
+    }
+
     use super::*;
     use crate::ecef_to_geodetic_lonlat;
 
