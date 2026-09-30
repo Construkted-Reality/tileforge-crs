@@ -10,21 +10,25 @@ revision, not by version, so a version bump here does not by itself break them.
 
 ## [Unreleased]
 
-### Added
+## [0.3.0] - 2026-09-30 - Expose coordinate units and reject unsupported operations
 
+This release exposes horizontal and vertical coordinate units separately. It rejects explicit datum operations that the converter cannot preserve and rejects reserved GeoTIFF sentinel codes.
+
+### Added
 - Expose the selected source CRS for consumers that must select a coordinate-bound policy.
 
-### Added
 
 - Expose separate horizontal and vertical metre conversion factors. Geographic horizontal coordinates return no linear factor.
 
-### Fixed
 
+- **`CrsError::SentinelCode(u16)`** — a CRS string parsed to a GeoTIFF reserved
+  sentinel. New variant; existing consumers map `CrsError` via `to_string` / a
+  non-exhaustive `matches!` and are unaffected.
+
+### Fixed
 - Correct projected height documentation. Horizontal feet do not imply vertical feet; reprojection keeps the catalogue vertical unit.
 
-
 ### Changed
-
 - Reject WKT BOUNDCRS and TOWGS84 definitions instead of discarding their explicit datum transformation. Reproject such data with the declared operation before conversion.
 
 - **`parse_crs_string` / `parse_crs_string_epsg` now reject the GeoTIFF reserved
@@ -41,12 +45,6 @@ revision, not by version, so a version bump here does not by itself break them.
   a valid "no CRS" declaration, so it still resolves to `Ok(Some(SidecarCrs { epsg:
   0 | 32767, .. }))` and leaves the absence policy to the caller — it does **not**
   become a parse error.
-
-### Added
-
-- **`CrsError::SentinelCode(u16)`** — a CRS string parsed to a GeoTIFF reserved
-  sentinel. New variant; existing consumers map `CrsError` via `to_string` / a
-  non-exhaustive `matches!` and are unaffected.
 
 ## [0.2.0] - 2026-07-04
 
