@@ -1,3 +1,5 @@
+// ABOUTME: Reprojects catalogue CRS coordinates while preserving native axis units.
+// ABOUTME: Exposes separate horizontal and vertical conversions for metric measurements.
 //! `Reprojector` — wraps proj4rs to reproject from any catalogued source
 //! EPSG into ECEF (EPSG:4978).
 //!
@@ -68,6 +70,11 @@ impl Reprojector {
         })
     }
 
+    /// Return the source coordinate reference system selected at construction.
+    pub fn source_crs(&self) -> SourceCrs {
+        SourceCrs::new(self.source_epsg)
+    }
+
     /// Reproject `[x, y, z]` from the source CRS to ECEF metres.
     ///
     /// **Axis order & units (lon/lat-swap hazard).** For a **geographic**
@@ -78,8 +85,9 @@ impl Reprojector {
     /// feeds `[lat, lon, h]` gets silently wrong output: the swap only
     /// errors when `|lat-as-lon| > 90`; for e.g. (lon 45, lat 12) swapped
     /// to (12, 45) it lands a continent away with no error. For a
-    /// **projected** source the input is native `[easting, northing, h]` in
-    /// the CRS's linear unit (metres, US survey feet, …). A `debug_assert`
+    /// **projected** source, easting and northing use the horizontal linear unit.
+    /// Height uses the independent vertical unit, usually metres even when
+    /// the horizontal unit is feet. A `debug_assert`
     /// guards `|lat| ≤ 90` on the geographic path as a cheap tripwire
     /// (`|lon| ≤ 180` is intentionally *not* asserted — proj4rs wraps
     /// longitude, so 190°E is valid).
@@ -141,6 +149,18 @@ impl Reprojector {
         Ok([p.0, p.1, p.2])
     }
 
+    /// Metres per native horizontal unit for linear source coordinates.
+    /// Geographic longitude and latitude are angular, so they return `None`.
+    pub fn horizontal_meters_per_unit(&self) -> Option<f64> {
+        (!self.source_is_latlong).then(|| self.source.to_meter())
+    }
+
+    /// Metres per native height unit. This is independent of horizontal units.
+    /// Catalogue projections without a vertical unit use metre heights.
+    pub fn vertical_meters_per_unit(&self) -> f64 {
+        self.source.vto_meter()
+    }
+
     /// `true` iff the source EPSG is 4978 — i.e. reprojection is the
     /// identity.
     pub fn is_identity(&self) -> bool {
@@ -189,6 +209,17 @@ pub fn is_supported_epsg(epsg: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_crs_reports_the_selected_catalogue_entry() {
+        for epsg in [4326, 4978, 2926, 32617] {
+            let source = super::SourceCrs::new(epsg);
+            assert_eq!(
+                super::Reprojector::new(source).unwrap().source_crs(),
+                source
+            );
+        }
+    }
+
     use super::*;
     use crate::ecef_to_geodetic_lonlat;
 
