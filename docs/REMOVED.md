@@ -3,7 +3,7 @@
 > **Status:** Current. Append a row for every document that you delete.
 > **Summary:** Documents deleted as stale or redundant, with the reason and the command that restores each one.
 
-Git history keeps every removed file. To read one, run `git show <commit>:<path>`.
+Git history keeps every removed file. To read one, run `git show <commit>:<path>`. To restore one, run `git checkout <commit> -- <path>`.
 The commit column is the last commit that contained the file.
 
 | Path | Commit | Reason |

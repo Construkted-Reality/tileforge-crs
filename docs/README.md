@@ -2,7 +2,7 @@
 
 Each document starts with a **Status** line (Current or Historical) and a **Summary** line.
 Files of 200 lines or more also have a line-numbered contents block at the top.
-Removed documents are listed in [REMOVED.md](REMOVED.md) with the command that restores them.
+Removed documents are listed in [REMOVED.md](REMOVED.md) with the commit that still contains them.
 
 | Document | Status | Read when |
 |---|---|---|
