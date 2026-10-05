@@ -10,6 +10,10 @@ revision, not by version, so a version bump here does not by itself break them.
 
 ## [Unreleased]
 
+### Added
+
+- Add `Reprojector::from_ecef` to recover source coordinates for position-dependent normal transforms. Geographic output uses longitude and latitude in degrees. Projected output preserves separate horizontal and vertical units.
+
 ## [0.3.0] - 2026-09-30 - Expose coordinate units and reject unsupported operations
 
 This release exposes horizontal and vertical coordinate units separately. It rejects explicit datum operations that the converter cannot preserve and rejects reserved GeoTIFF sentinel codes.
