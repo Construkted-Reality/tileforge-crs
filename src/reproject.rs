@@ -149,6 +149,46 @@ impl Reprojector {
         Ok([p.0, p.1, p.2])
     }
 
+    /// Recover source coordinates from ECEF metres.
+    ///
+    /// Geographic output uses `[longitude_deg, latitude_deg, height_m]`.
+    /// Projected output preserves the independent horizontal and vertical
+    /// units of the source CRS. EPSG:4978 preserves finite input bits.
+    ///
+    /// # Errors
+    /// Returns [`CrsError::Reproject`] for nonfinite input, failed inverse
+    /// operations, or nonfinite output.
+    pub fn from_ecef(&self, xyz: [f64; 3]) -> Result<[f64; 3], CrsError> {
+        if !xyz.iter().all(|coordinate| coordinate.is_finite()) {
+            return Err(CrsError::reproject(format!(
+                "Nonfinite ECEF input for inverse EPSG:{}.",
+                self.source_epsg
+            )));
+        }
+        if self.is_identity() {
+            return Ok(xyz);
+        }
+        let mut point = (xyz[0], xyz[1], xyz[2]);
+        transform(&self.target, &self.source, &mut point).map_err(|error| {
+            CrsError::reproject(format!(
+                "Inverse EPSG:{EPSG_ECEF} to EPSG:{} fails for {xyz:?}: {error:?}",
+                self.source_epsg
+            ))
+        })?;
+        let result = if self.source_is_latlong {
+            [point.0.to_degrees(), point.1.to_degrees(), point.2]
+        } else {
+            [point.0, point.1, point.2]
+        };
+        if !result.iter().all(|coordinate| coordinate.is_finite()) {
+            return Err(CrsError::reproject(format!(
+                "Inverse EPSG:{} returns nonfinite coordinates for {xyz:?}.",
+                self.source_epsg
+            )));
+        }
+        Ok(result)
+    }
+
     /// Metres per native horizontal unit for linear source coordinates.
     /// Geographic longitude and latitude are angular, so they return `None`.
     pub fn horizontal_meters_per_unit(&self) -> Option<f64> {
