@@ -17,9 +17,7 @@ This release exposes horizontal and vertical coordinate units separately. It rej
 ### Added
 - Expose the selected source CRS for consumers that must select a coordinate-bound policy.
 
-
 - Expose separate horizontal and vertical metre conversion factors. Geographic horizontal coordinates return no linear factor.
-
 
 - **`CrsError::SentinelCode(u16)`** — a CRS string parsed to a GeoTIFF reserved
   sentinel. New variant; existing consumers map `CrsError` via `to_string` / a

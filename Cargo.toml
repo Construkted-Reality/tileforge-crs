@@ -17,6 +17,6 @@ thiserror = "2"
 # NOTE: the parity oracle compares Reprojector output to FROZEN PROJ
 # ground-truth grids in tests/fixtures/*.parity-grid.txt (captured offline
 # from PROJ 9.x). The live `proj` FFI is intentionally NOT a dependency —
-# it requires system libproj/SQLite3, which build hosts (e.g. .211) lack,
+# it requires system libproj/SQLite3, which the build hosts lack,
 # and no test invokes it at runtime. Regenerate fixtures on a PROJ-equipped
 # machine if the reprojection ever changes. (tileforge-pc ADR-004.)
