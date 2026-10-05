@@ -28,7 +28,6 @@ behavior of this crate. The API reference is the rustdoc in `src/lib.rs`.
 
 ## Open items
 
-- Release 0.3.0 has no Git tag. The only tag is `v0.2.0`. The 0.3.0 release commit is `5a8f749`.
 - MT1 remainder: no frozen PROJ fixture for a non-WGS84 geographic source (EPSG:4269) and no EPSG:4979 grid. Both need a machine with PROJ installed.
 - `EPSG:+123` parses as 123, because `u16::parse` accepts a leading `+` (`src/sidecar.rs`). Harmless; tighten it if the parser changes.
 
