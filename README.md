@@ -19,6 +19,10 @@ A release here changes nothing downstream until a consumer moves its pin.
 - `parse_crs_string` rejects the GeoTIFF sentinel codes `EPSG:0` and `EPSG:32767`.
   A sidecar that declares a sentinel is a valid "no CRS" declaration, so
   `detect_crs_from_sidecar` returns it and leaves the policy to the caller.
+- Horizontal and vertical units are independent. Horizontal feet do not imply vertical feet.
+  Read `horizontal_meters_per_unit` and `vertical_meters_per_unit` instead of assuming one unit.
+- A lon/lat swap where both values are at most 90 degrees in magnitude is undetectable.
+  The result is a plausible position in the wrong place.
 - Vertical-datum policy belongs to the consumer. The parser only reports `vertical_stripped`.
 
 The rustdoc in `src/lib.rs` is the full API reference.

@@ -1,6 +1,6 @@
 # Explicit WKT transformations
 
-> **Status:** Historical validation record. The rejection ships in 0.3.0, and both consumer pins (mesh, pc) now include it. CRS-01 is the finding ID from the 2026-09-06 family review, whose raw output is not kept in Git.
+> **Status:** Historical validation record. The rejection ships in 0.3.0, and both consumer pins (mesh, pc) include it as of 2026-10-05. CRS-01 is the finding ID from the 2026-09-06 family review, whose raw output is not kept in Git. The evidence directory on `.212` is outside Git and was not re-checked for this status line.
 > **Summary:** Why the parser rejects WKT `BOUNDCRS` and `TOWGS84` blocks instead of discarding them, and how the change was validated.
 
 CRS-01. Base revision: d38eb25d9b5b64f5cfa17364cf35a82488fccaec. The synthetic bound-shift fixture comes from the September 6 review's PROJ oracle. Discarding its declared 100, 200, and 300 metre translations changed the result by 374.1656329841366 metres.
@@ -21,4 +21,4 @@ All final commands exit 0: 56 unit tests, four explicit-transform regressions, t
 
 Raw evidence stays outside Git on .212 in /mnt/data2/crs/review-fixes-20260907/evidence. The red.log, green-final.log, release-final.log, and clippy-final.log files record the runs. The small input fixture is committed under tests/fixtures/bound-shift.wkt.
 
-This PR changes the shared library. Consumer pins require a separate update after merge; this PR does not prove consumer-side error propagation.
+When this record was written, the change was pull request #1 and the consumer pins did not include it. Both pins moved later (see the status line). This record does not prove consumer-side error propagation.
