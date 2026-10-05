@@ -41,7 +41,8 @@
 //! projects *strip* the vertical datum (PC per ADR-002; mesh because an
 //! orthometric offset is a near-constant UI-correctable shift). The core
 //! takes no policy: it reports a `vertical_stripped` flag and lets the
-//! caller act (mesh warns; PC ignores).
+//! caller act (mesh warns; PC warns for LAS WKT records and ignores it
+//! for sidecars).
 //!
 //! The PC-only LAS input adapter (`vlr`, `geokey`, `pre_pass`,
 //! `extract_crs_from_las`, the `las` / `pasture-io` deps) stays in
