@@ -17,7 +17,7 @@
 //! **unquoted**) in WKT2. For a compound CRS the scanner descends into the
 //! first horizontal subblock and reports the vertical component as stripped
 //! via `WktExtraction::vertical_stripped` — the caller decides what to do
-//! (PC ignores, mesh warns). BOUNDCRS and TOWGS84 operations are rejected
+//! (mesh warns; PC warns for LAS WKT records and ignores it for sidecars). BOUNDCRS and TOWGS84 operations are rejected
 //! because an EPSG code alone cannot preserve their explicit transformation.
 
 use crate::error::CrsError;
@@ -26,8 +26,8 @@ use crate::error::CrsError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WktExtraction {
     pub epsg: u16,
-    /// `true` iff the input was a `COMPD_CS[...]` and the vertical
-    /// component was discarded.
+    /// `true` iff the input was a compound CRS (`COMPD_CS[...]` or
+    /// `COMPOUNDCRS[...]`) and the vertical component was discarded.
     pub vertical_stripped: bool,
 }
 

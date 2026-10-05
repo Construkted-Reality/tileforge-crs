@@ -1,6 +1,6 @@
 # Explicit WKT transformations
 
-> **Status:** Current. The rejection described here ships in 0.3.0.
+> **Status:** Historical validation record. The rejection ships in 0.3.0, and both consumer pins (mesh, pc) now include it. CRS-01 is the finding ID from the 2026-09-06 family review, whose raw output is not kept in Git.
 > **Summary:** Why the parser rejects WKT `BOUNDCRS` and `TOWGS84` blocks instead of discarding them, and how the change was validated.
 
 CRS-01. Base revision: d38eb25d9b5b64f5cfa17364cf35a82488fccaec. The synthetic bound-shift fixture comes from the September 6 review's PROJ oracle. Discarding its declared 100, 200, and 300 metre translations changed the result by 374.1656329841366 metres.

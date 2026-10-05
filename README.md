@@ -29,6 +29,7 @@ The rustdoc in `src/lib.rs` is the full API reference.
 cargo test
 cargo test --release
 cargo clippy --all-targets -- -D warnings
+cargo fmt --check
 ```
 
 The parity oracle compares against frozen PROJ grids in `tests/fixtures/`.

@@ -41,13 +41,13 @@ const SIDECAR_SUFFIXES: &[&str] = &[".prj", ".PRJ", ".qpj", ".QPJ"];
 ///
 /// Surfacing `vertical_stripped` (rather than returning a bare `u16`)
 /// lets each consumer act on it: `tileforge-mesh` warns the user that an
-/// orthometric offset was discarded; `tileforge-pc` ignores it (ADR-002
-/// ellipsoidal-only). The core itself takes no policy.
+/// orthometric offset was discarded; `tileforge-pc` warns for LAS WKT
+/// records and ignores it for sidecars (ADR-002 ellipsoidal-only). The core itself takes no policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParsedCrs {
     pub epsg: u16,
-    /// `true` iff the input was a `COMPD_CS[...]` whose vertical
-    /// component was discarded during parsing.
+    /// `true` iff the input was a compound CRS (`COMPD_CS[...]` or
+    /// `COMPOUNDCRS[...]`) whose vertical component was discarded during parsing.
     pub vertical_stripped: bool,
 }
 
@@ -113,9 +113,10 @@ pub fn detect_crs_from_sidecar(input: &Path) -> Result<Option<SidecarCrs>, CrsEr
 /// - **`EPSG:NNNNN`** short form (GDAL `gdalsrsinfo -o proj` style).
 ///   Case-insensitive on the `EPSG` prefix; tolerates surrounding
 ///   whitespace. Never carries a vertical component.
-/// - **OGC WKT 1** — `PROJCS[...]`, `GEOGCS[...]`, `GEOCCS[...]`, or
-///   `COMPD_CS[...]`. Body parsed via [`extract_epsg_from_wkt`]; a
-///   `COMPD_CS` sets `vertical_stripped = true`.
+/// - **OGC WKT 1 or WKT 2** — `PROJCS[...]`, `GEOGCS[...]`, `GEOCCS[...]`,
+///   `COMPD_CS[...]`, `PROJCRS[...]`, `GEOGCRS[...]`, `GEODCRS[...]`, or
+///   `COMPOUNDCRS[...]`. Body parsed via [`extract_epsg_from_wkt`]; a
+///   compound CRS sets `vertical_stripped = true`.
 ///
 /// Used by both [`detect_crs_from_sidecar`] (sidecar `.prj`/`.qpj`)
 /// and the E57 reader's `coordinateMetadata` ingest. Callers should
