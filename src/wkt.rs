@@ -131,23 +131,28 @@ const HORIZONTAL_KEYWORDS: &[&str] = &[
 /// starts with one of them is the vertical leg of a compound CRS.
 const VERTICAL_KEYWORDS: &[&str] = &["VERT_CS", "VERTCRS", "VERTICALCRS"];
 
-/// Scan every nesting level without recursion and reject two kinds of
+/// Scan every nesting level without recursion and reject three kinds of
 /// input outside quoted strings:
 ///
 /// - the identifiers `BOUNDCRS` and `TOWGS84` (ASCII case-insensitive),
 ///   whatever character follows them, because an EPSG code alone cannot
 ///   carry their explicit transformation;
 /// - a `(` or `)` delimiter, because the block scanner understands square
-///   brackets only.
+///   brackets only;
+/// - a `[` that does not open the block of an identifier (the identifier
+///   and optional ASCII whitespace come directly before it), and a `]`
+///   that closes no open `[`. The block walkers skip a block only when it
+///   opens after an identifier, so any other bracket would let them read
+///   nested clauses as if they were at depth 0.
 ///
 /// One exception: a `BOUNDCRS[...]` block whose `SOURCECRS[...]` child
 /// holds a vertical CRS (see [`bound_crs_has_vertical_source`]) is not
 /// scanned for those identifiers. Its operation applies to heights only,
 /// and the scanner discards the vertical component of a compound CRS, so
-/// the operation is discarded with it. The delimiter rule still applies
-/// inside that block.
+/// the operation is discarded with it. The delimiter and bracket rules
+/// still apply inside that block.
 ///
-/// Quoted names (with `""` escapes) are exempt from both checks.
+/// Quoted names (with `""` escapes) are exempt from all checks.
 fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
     let bytes = wkt.as_bytes();
     // Bracket depth of the scan position, and the depth at which an
@@ -176,10 +181,18 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
                 char::from(bytes[i])
             )));
         } else if bytes[i] == b'[' {
-            depth += 1;
-            i += 1;
+            return Err(CrsError::parse(
+                "CRS WKT contains a '[' that does not open the block of an identifier; \
+                 every '[' must follow a keyword such as PROJCS or AUTHORITY"
+                    .to_string(),
+            ));
         } else if bytes[i] == b']' {
-            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Err(CrsError::parse(
+                    "CRS WKT contains a ']' that closes no block".to_string(),
+                ));
+            }
+            depth -= 1;
             if exempt_from == Some(depth) {
                 exempt_from = None;
             }
@@ -196,7 +209,13 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
                     )));
                 }
             }
-            i = end;
+            let open = skip_whitespace(bytes, end);
+            if bytes.get(open) == Some(&b'[') {
+                depth += 1;
+                i = open + 1;
+            } else {
+                i = end;
+            }
         } else {
             i += 1;
         }

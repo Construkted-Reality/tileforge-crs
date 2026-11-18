@@ -206,3 +206,38 @@ fn bound_vertical_crs_at_the_root_is_an_error() {
     assert!(msg.contains("horizontal or compound"), "{msg}");
     assert!(parse_crs_string(&wkt).is_err());
 }
+#[test]
+fn bracket_that_opens_no_identifier_block_is_rejected() {
+    for wkt in [
+        "PROJCS[\"x\",GEOGCS\u{b}[\"g\",AUTHORITY[\"EPSG\",\"4326\"]],UNIT[\"m\",1]]",
+        "PROJCS[\"x\",GEOGCS\u{a0}[\"g\",AUTHORITY[\"EPSG\",\"4326\"]],UNIT[\"m\",1]]",
+        r#"PROJCS["x",[AUTHORITY["EPSG","4326"]],UNIT["m",1]]"#,
+        r#"[PROJCS["x",AUTHORITY["EPSG","4326"]]]"#,
+    ] {
+        let msg = extract_epsg_from_wkt(wkt).unwrap_err().to_string();
+        assert!(
+            msg.contains("'[' that does not open the block of an identifier"),
+            "{wkt:?}: {msg}"
+        );
+        assert!(msg.contains("CRS WKT"), "{wkt:?}: {msg}");
+        assert!(parse_crs_string(wkt).is_err());
+    }
+}
+
+#[test]
+fn bracket_that_closes_no_block_is_rejected() {
+    for wkt in [
+        r#"PROJCS["x",AUTHORITY["EPSG","4326"]]]"#,
+        r#"PROJCS["x",UNIT["m",1]],AUTHORITY["EPSG","4326"]]"#,
+        r#"]PROJCS["x",AUTHORITY["EPSG","4326"]]"#,
+    ] {
+        let msg = extract_epsg_from_wkt(wkt).unwrap_err().to_string();
+        assert!(msg.contains("']' that closes no block"), "{wkt:?}: {msg}");
+    }
+}
+
+#[test]
+fn quoted_brackets_are_not_blocks() {
+    let wkt = r#"PROJCS["[x], ""[y]"" ]",AUTHORITY["EPSG","32617"]]"#;
+    assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 32617);
+}
