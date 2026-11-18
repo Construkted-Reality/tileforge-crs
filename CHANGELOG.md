@@ -10,6 +10,50 @@ revision, not by version, so a version bump here does not by itself break them.
 
 ## [Unreleased]
 
+### Changed
+- `detect_crs_from_sidecar` refuses a `.prj`/`.qpj` sidecar larger than 1 MiB
+  (1,048,576 bytes) with `CrsError::Io`. The read stops one byte past the limit,
+  so a large file no longer takes memory equal to its size.
+- The WKT scanner rejects the identifiers `BOUNDCRS` and `TOWGS84` outside a
+  quoted string whatever character follows them. Before, it rejected them only
+  when ASCII whitespace and a `[` followed.
+- The WKT scanner rejects `(` and `)` outside a quoted string. It supports
+  square-bracket delimiters only. Quoted names that contain parentheses still
+  parse. The rule covers the whole string, so text with a parenthesis after
+  the root block also fails.
+- The WKT scanner reads every depth-0 `AUTHORITY`/`ID` clause of a block, not only
+  the first one. Two EPSG clauses with different codes are an error; a repeated
+  code is accepted. When an EPSG clause exists, clauses of other authorities are
+  ignored, so a non-EPSG clause before the EPSG clause no longer causes an error.
+  A clause whose arguments cannot be read is an error even after a valid EPSG
+  clause.
+- A compound CRS (`COMPD_CS`/`COMPOUNDCRS`) with more than one horizontal block is
+  an error. Before, the first horizontal block was used.
+- Error messages from the WKT scanner say "CRS WKT" instead of "WKT VLR", because
+  the scanner also reads sidecars and E57 metadata. The message for a WKT without
+  an EPSG `AUTHORITY`/`ID` clause no longer recommends `pdal translate`; it says
+  that ESRI-style `.prj` files omit the clause and that the parser resolves a CRS
+  by its EPSG code only.
+- The combined `parse_crs_string` error names both the WKT1 and the WKT2 root
+  keywords.
+
+### Fixed
+- Error messages repeat at most 64 characters of caller input and mark a cut with
+  `...`. Before, an input token was repeated in full.
+- A body that starts with `EPSG:` but carries an invalid code (`EPSG:65536`,
+  `EPSG:`, `EPSG:32617 extra`) gets a short-form error that shows the code text.
+  Before, it got a WKT error about a missing `[`.
+- Rustdoc: `extract_epsg_from_wkt` returns the sentinel codes 0 and 32767 as `Ok`;
+  `detect_crs_from_sidecar` uses the first sidecar that exists and does not try the
+  later suffixes when it fails; the `f32` spacing of local ENU coordinates (0.98 mm
+  at 10 km, 7.8 mm at 100 km, 62.5 mm at 1000 km); the crate logs nothing when an
+  override displaces a detected EPSG; stale statements in `error.rs` and
+  `source_crs.rs`.
+
+### Removed
+- The unused test fixtures `tests/fixtures/fabregualta.epsg.txt` and
+  `tests/fixtures/kingston-rd.epsg.txt`.
+
 ## [0.3.0] - 2026-09-30 - Expose coordinate units and reject unsupported operations
 
 This release exposes horizontal and vertical coordinate units separately. It rejects explicit datum operations that the converter cannot preserve and rejects reserved GeoTIFF sentinel codes.

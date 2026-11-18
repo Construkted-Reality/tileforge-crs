@@ -7,9 +7,9 @@
 //!   `coordinateMetadata`) → sidecar `.prj` / `.qpj` → local-frame
 //!   fallback. The default for every workflow.
 //! - **`Override(u16)`** — caller forces a specific EPSG. Wins
-//!   silently over any in-band / sidecar value; the call site emits a
-//!   `tracing::info` breadcrumb when the override displaced a detected
-//!   EPSG, so support can trace the decision after the fact.
+//!   silently over any in-band / sidecar value. This crate logs nothing;
+//!   a caller that knows the detected EPSG can log the displacement, so
+//!   support can trace the decision after the fact.
 //!
 //! There is no `LocalCartesian` variant. Local-frame ingest is a
 //! resolution outcome (`CrsResolution::LocalFrame`), not a user-facing
@@ -81,8 +81,8 @@ impl CrsHint {
     ///
     /// Infallible: every input combination has a defined outcome.
     /// Mismatch between `Override(o)` and `detected = Some(d)` does
-    /// not error; the call site logs the displacement at
-    /// `tracing::info` level and proceeds with `o`.
+    /// not error and is not reported: the result is `Override(o)`, and
+    /// logging the displacement is left to the caller.
     pub fn resolve(self, detected: Option<u16>) -> CrsResolution {
         match self {
             CrsHint::Override(o) => CrsResolution::Override(o),

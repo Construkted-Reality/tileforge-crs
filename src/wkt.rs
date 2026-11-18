@@ -2,20 +2,23 @@
 //! clause from a CRS WKT string.
 //!
 //! Not a full WKT parser. The strategy is bracket-balanced substring
-//! scanning, which is sufficient for the Phase 1.1 deliverable: pull the
-//! EPSG code out of a real-world LAS-1.4 WKT VLR (which always carries
-//! an `AUTHORITY["EPSG","NNNN"]` clause when produced by PDAL, lastools,
-//! QGIS, or GDAL).
+//! scanning, which is enough to pull the EPSG code out of a CRS WKT from
+//! any source (a LAS 1.4 WKT record, a `.prj`/`.qpj` sidecar, E57
+//! metadata). PDAL, lastools, QGIS and GDAL write an
+//! `AUTHORITY["EPSG","NNNN"]` clause; ESRI-style `.prj` files usually do
+//! not, and such a WKT fails because this scanner resolves a CRS by its
+//! EPSG code only. Square brackets are the only supported delimiters.
 //!
 //! Supported root blocks — both **WKT1** and **WKT2** (LAS 1.4 producers
 //! increasingly emit WKT2):
 //! - WKT1: `PROJCS`, `GEOGCS`, `GEOCCS`, `COMPD_CS`.
 //! - WKT2: `PROJCRS`, `GEOGCRS`, `GEODCRS`, `COMPOUNDCRS`.
 //!
-//! The EPSG code is read from the outermost authority clause, which is
+//! The EPSG code is read from the outermost authority clauses, which are
 //! `AUTHORITY["EPSG","NNNN"]` in WKT1 and `ID["EPSG",NNNN]` (code often
-//! **unquoted**) in WKT2. For a compound CRS the scanner descends into the
-//! first horizontal subblock and reports the vertical component as stripped
+//! **unquoted**) in WKT2. Two different EPSG codes at that level are an
+//! error. For a compound CRS the scanner descends into the one horizontal
+//! subblock (a second one is an error) and reports the vertical component as stripped
 //! via `WktExtraction::vertical_stripped` — the caller decides what to do
 //! (mesh warns; PC warns for LAS WKT records and ignores it for sidecars). BOUNDCRS and TOWGS84 operations are rejected
 //! because an EPSG code alone cannot preserve their explicit transformation.
@@ -32,36 +35,62 @@ pub struct WktExtraction {
 }
 
 /// Extract the EPSG code from a CRS WKT string.
+///
+/// Unlike [`parse_crs_string`](crate::parse_crs_string), this function
+/// returns the GeoTIFF sentinel codes `0` and `32767` as `Ok`. A caller
+/// that passes the code on to [`Reprojector::new`](crate::Reprojector::new)
+/// must first check it with [`is_geotiff_sentinel`](crate::is_geotiff_sentinel).
+///
+/// # Errors
+///
+/// [`CrsError::Parse`] when the WKT has an unsupported root, unbalanced
+/// brackets, a `(` or `)` delimiter, a `BOUNDCRS` or `TOWGS84` operation,
+/// no EPSG `AUTHORITY`/`ID` clause, two different EPSG codes in one
+/// block, or a compound CRS with more than one horizontal block.
 pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
     reject_explicit_transforms(wkt)?;
     let bytes = wkt.as_bytes();
     let after_ws = skip_whitespace(bytes, 0);
     let (id, after_id) = read_identifier(bytes, after_ws).ok_or_else(|| {
-        CrsError::parse("WKT VLR is empty or has no leading identifier".to_string())
+        CrsError::parse("CRS WKT is empty or has no leading identifier".to_string())
     })?;
     let id_upper = id.to_ascii_uppercase();
+    let id_shown = echo_fragment(id);
     let after_open = skip_whitespace(bytes, after_id);
     if after_open >= bytes.len() || bytes[after_open] != b'[' {
         return Err(CrsError::parse(format!(
-            "WKT VLR identifier '{id}' is not followed by '['"
+            "CRS WKT identifier '{id_shown}' is not followed by '['"
         )));
     }
     let close_idx = find_matching_bracket(bytes, after_open).ok_or_else(|| {
-        CrsError::parse(format!("WKT VLR identifier '{id}' has unbalanced brackets"))
+        CrsError::parse(format!(
+            "CRS WKT identifier '{id_shown}' has unbalanced brackets"
+        ))
     })?;
     let body = &wkt[after_open + 1..close_idx];
 
     match id_upper.as_str() {
-        // Compound CRS (WKT1 COMPD_CS / WKT2 COMPOUNDCRS): take the first
+        // Compound CRS (WKT1 COMPD_CS / WKT2 COMPOUNDCRS): take the one
         // horizontal subblock, mark the vertical component stripped.
         "COMPD_CS" | "COMPOUNDCRS" => {
-            let horizontal = find_child_block(body, HORIZONTAL_KEYWORDS).ok_or_else(|| {
-                CrsError::parse(
-                    "compound CRS contains no horizontal (PROJCS/GEOGCS/GEOCCS/\
-                     PROJCRS/GEOGCRS/GEODCRS) subblock to extract EPSG from"
-                        .to_string(),
-                )
-            })?;
+            let horizontal = match find_child_blocks(body, HORIZONTAL_KEYWORDS).as_slice() {
+                [] => {
+                    return Err(CrsError::parse(
+                        "compound CRS contains no horizontal (PROJCS/GEOGCS/GEOCCS/\
+                         PROJCRS/GEOGCRS/GEODCRS) subblock to extract EPSG from"
+                            .to_string(),
+                    ));
+                }
+                [one] => *one,
+                more => {
+                    return Err(CrsError::parse(format!(
+                        "compound CRS contains more than one horizontal (PROJCS/GEOGCS/\
+                         GEOCCS/PROJCRS/GEOGCRS/GEODCRS) subblock ({} found); the CRS \
+                         identifier is ambiguous",
+                        more.len()
+                    )));
+                }
+            };
             let inner = extract_epsg_from_wkt(horizontal)?;
             Ok(WktExtraction {
                 epsg: inner.epsg,
@@ -78,7 +107,7 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
             })
         }
         _ => Err(CrsError::parse(format!(
-            "WKT VLR root is unexpected '{id}' (want a WKT1 PROJCS/GEOGCS/GEOCCS/COMPD_CS \
+            "CRS WKT root is unexpected '{id_shown}' (want a WKT1 PROJCS/GEOGCS/GEOCCS/COMPD_CS \
              or WKT2 PROJCRS/GEOGCRS/GEODCRS/COMPOUNDCRS)"
         ))),
     }
@@ -91,7 +120,16 @@ const HORIZONTAL_KEYWORDS: &[&str] = &[
     "PROJCRS", "GEOGCRS", "GEODCRS", // WKT2
 ];
 
-/// Scan every nesting level without recursion. Quoted names are not keywords.
+/// Scan every nesting level without recursion and reject two kinds of
+/// input outside quoted strings:
+///
+/// - the identifiers `BOUNDCRS` and `TOWGS84` (ASCII case-insensitive),
+///   whatever character follows them, because an EPSG code alone cannot
+///   carry their explicit transformation;
+/// - a `(` or `)` delimiter, because the block scanner understands square
+///   brackets only.
+///
+/// Quoted names (with `""` escapes) are exempt from both checks.
 fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
     let bytes = wkt.as_bytes();
     let mut i = 0;
@@ -109,11 +147,14 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
                 }
                 i += 1;
             }
+        } else if bytes[i] == b'(' || bytes[i] == b')' {
+            return Err(CrsError::parse(format!(
+                "CRS WKT contains '{}' outside a quoted string; this parser supports \
+                 square-bracket delimiters only",
+                char::from(bytes[i])
+            )));
         } else if let Some((id, end)) = read_identifier(bytes, i) {
-            let next = skip_whitespace(bytes, end);
-            if bytes.get(next) == Some(&b'[')
-                && (id.eq_ignore_ascii_case("BOUNDCRS") || id.eq_ignore_ascii_case("TOWGS84"))
-            {
+            if id.eq_ignore_ascii_case("BOUNDCRS") || id.eq_ignore_ascii_case("TOWGS84") {
                 return Err(CrsError::parse(format!(
                     "{} declares an explicit datum transformation that this EPSG-only parser cannot preserve; reproject the data with that transformation before conversion",
                     id.to_ascii_uppercase()
@@ -125,6 +166,20 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
         }
     }
     Ok(())
+}
+
+/// Longest fragment of caller input, in characters, that an error message
+/// repeats back.
+pub(crate) const ECHO_MAX_CHARS: usize = 64;
+
+/// Return `fragment` for use in an error message: unchanged when it has at
+/// most [`ECHO_MAX_CHARS`] characters, otherwise its first `ECHO_MAX_CHARS`
+/// characters followed by `...`.
+pub(crate) fn echo_fragment(fragment: &str) -> String {
+    match fragment.char_indices().nth(ECHO_MAX_CHARS) {
+        Some((cut, _)) => format!("{}...", &fragment[..cut]),
+        None => fragment.to_string(),
+    }
 }
 
 fn skip_whitespace(bytes: &[u8], mut i: usize) -> usize {
@@ -190,9 +245,10 @@ fn find_matching_bracket(bytes: &[u8], open_idx: usize) -> Option<usize> {
 }
 
 /// Walk the depth-0 tokens of `body` (the contents of a block, excluding
-/// its outer brackets) and return the substring of the first child block
-/// whose identifier (case-insensitive) is in `keywords`.
-fn find_child_block<'a>(body: &'a str, keywords: &[&str]) -> Option<&'a str> {
+/// its outer brackets) and return the substring of every child block
+/// whose identifier (case-insensitive) is in `keywords`, in input order.
+fn find_child_blocks<'a>(body: &'a str, keywords: &[&str]) -> Vec<&'a str> {
+    let mut blocks = Vec::new();
     let bytes = body.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -214,14 +270,18 @@ fn find_child_block<'a>(body: &'a str, keywords: &[&str]) -> Option<&'a str> {
             continue;
         }
         if c.is_ascii_alphanumeric() || c == b'_' {
-            let (id, after_id) = read_identifier(bytes, i)?;
+            let Some((id, after_id)) = read_identifier(bytes, i) else {
+                return blocks;
+            };
             let after_ws = skip_whitespace(bytes, after_id);
             if after_ws < bytes.len() && bytes[after_ws] == b'[' {
-                let close = find_matching_bracket(bytes, after_ws)?;
+                let Some(close) = find_matching_bracket(bytes, after_ws) else {
+                    return blocks;
+                };
                 if keywords.iter().any(|k| id.eq_ignore_ascii_case(k)) {
-                    return Some(&body[i..=close]);
+                    blocks.push(&body[i..=close]);
                 }
-                // Skip past this non-matching block and continue scanning.
+                // Skip past this block, so nested blocks are not counted.
                 i = close + 1;
                 continue;
             }
@@ -230,13 +290,22 @@ fn find_child_block<'a>(body: &'a str, keywords: &[&str]) -> Option<&'a str> {
         }
         i += 1;
     }
-    None
+    blocks
 }
 
 /// Scan `body` (the contents of a PROJCS/GEOGCS/GEOCCS block, excluding
-/// its outer brackets) for an `AUTHORITY[...]` at depth 0. Return the
-/// EPSG u16 code from inside it.
+/// its outer brackets) for every `AUTHORITY[...]` / `ID[...]` clause at
+/// depth 0 and return the EPSG u16 code they declare.
+///
+/// - Two EPSG clauses with different codes are an error (ambiguous
+///   identifier). Repeats of one code are accepted.
+/// - Clauses of other authorities are ignored when an EPSG clause exists;
+///   with no EPSG clause, the first other authority is reported.
+/// - Any clause whose arguments cannot be read, and any EPSG clause whose
+///   code is not a `u16`, is an error.
 fn parse_epsg_authority_in_body(body: &str) -> Result<u16, CrsError> {
+    let mut epsg: Option<u16> = None;
+    let mut other_authority: Option<&str> = None;
     let bytes = body.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -270,8 +339,19 @@ fn parse_epsg_authority_in_body(body: &str) -> Result<u16, CrsError> {
                 };
                 // WKT1 `AUTHORITY["EPSG","NNNN"]` or WKT2 `ID["EPSG",NNNN]`.
                 if id.eq_ignore_ascii_case("AUTHORITY") || id.eq_ignore_ascii_case("ID") {
-                    let inner = &body[after_ws + 1..close];
-                    return parse_authority_args(inner);
+                    let (authority, code_str) = split_authority_args(&body[after_ws + 1..close])?;
+                    if authority.eq_ignore_ascii_case("EPSG") {
+                        let code = parse_epsg_code(code_str)?;
+                        if let Some(first) = epsg.filter(|&first| first != code) {
+                            return Err(CrsError::parse(format!(
+                                "CRS identifier is ambiguous: one block carries EPSG codes \
+                                 {first} and {code} in its AUTHORITY/ID clauses"
+                            )));
+                        }
+                        epsg = Some(code);
+                    } else if other_authority.is_none() {
+                        other_authority = Some(authority);
+                    }
                 }
                 i = close + 1;
                 continue;
@@ -281,35 +361,71 @@ fn parse_epsg_authority_in_body(body: &str) -> Result<u16, CrsError> {
         }
         i += 1;
     }
-    Err(CrsError::parse(
-        "WKT VLR has no EPSG AUTHORITY/ID clause; pre-process with `pdal translate` to inject one"
-            .to_string(),
-    ))
+    match (epsg, other_authority) {
+        (Some(code), _) => Ok(code),
+        (None, Some(authority)) => Err(CrsError::parse(format!(
+            "CRS WKT uses non-EPSG authority '{}'; only EPSG is supported",
+            echo_fragment(authority)
+        ))),
+        (None, None) => Err(CrsError::parse(
+            "CRS WKT has no EPSG AUTHORITY/ID clause (ESRI-style .prj files omit it); \
+             this parser resolves a CRS by its EPSG code only, so the EPSG code must be \
+             supplied separately"
+                .to_string(),
+        )),
+    }
 }
 
-/// Parse the contents of an `AUTHORITY`/`ID` block. Handles both WKT1
-/// `"EPSG","NNNN"` (code quoted) and WKT2 `"EPSG",NNNN` (code unquoted),
-/// and tolerates extra WKT2 trailing args (e.g. `…,VERSION[...]` /
-/// `…,URI[...]`) by reading only the first two.
-fn parse_authority_args(inner: &str) -> Result<u16, CrsError> {
-    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+/// Split the contents of an `AUTHORITY`/`ID` block into the authority
+/// name and the code text. Handles both WKT1 `"EPSG","NNNN"` (code quoted)
+/// and WKT2 `"EPSG",NNNN` (code unquoted), and tolerates extra WKT2
+/// trailing args (e.g. `…,VERSION[...]` / `…,URI[...]`) by reading only
+/// the first two.
+fn split_authority_args(inner: &str) -> Result<(&str, &str), CrsError> {
+    let parts: Vec<&str> = split_outside_quotes(inner)
+        .into_iter()
+        .map(str::trim)
+        .collect();
     if parts.len() < 2 {
         return Err(CrsError::parse(format!(
-            "AUTHORITY/ID clause must have at least two arguments, got {} ({inner:?})",
-            parts.len()
+            "AUTHORITY/ID clause must have at least two arguments, got {} ({:?})",
+            parts.len(),
+            echo_fragment(inner)
         )));
     }
     let authority = strip_quotes(parts[0])?;
     // WKT1 quotes the code; WKT2 leaves it bare. Accept either.
     let code_str = strip_quotes_opt(parts[1]);
-    if !authority.eq_ignore_ascii_case("EPSG") {
-        return Err(CrsError::parse(format!(
-            "WKT VLR uses non-EPSG authority '{authority}'; only EPSG is supported"
-        )));
+    Ok((authority, code_str))
+}
+
+/// Split `text` at each comma that is outside a quoted string. A quoted
+/// string can hold a comma and the `""` escape.
+fn split_outside_quotes(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut in_string = false;
+    for (i, c) in text.char_indices() {
+        match c {
+            // A `""` escape toggles twice, which leaves the state unchanged.
+            '"' => in_string = !in_string,
+            ',' if !in_string => {
+                parts.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
     }
+    parts.push(&text[start..]);
+    parts
+}
+
+/// Parse the code text of an EPSG `AUTHORITY`/`ID` clause.
+fn parse_epsg_code(code_str: &str) -> Result<u16, CrsError> {
     code_str.parse::<u16>().map_err(|e| {
         CrsError::parse(format!(
-            "AUTHORITY/ID code is not a valid EPSG u16: {code_str:?}: {e}"
+            "AUTHORITY/ID code is not a valid EPSG u16: {:?}: {e}",
+            echo_fragment(code_str)
         ))
     })
 }
@@ -329,7 +445,8 @@ fn strip_quotes(s: &str) -> Result<&str, CrsError> {
     let s = s.trim();
     if s.len() < 2 || !s.starts_with('"') || !s.ends_with('"') {
         return Err(CrsError::parse(format!(
-            "AUTHORITY argument is not quoted: {s:?}"
+            "AUTHORITY argument is not quoted: {:?}",
+            echo_fragment(s)
         )));
     }
     Ok(&s[1..s.len() - 1])
@@ -530,6 +647,130 @@ mod tests {
             CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],
             ID["EPSG",4326,URI["http://www.opengis.net/def/crs/EPSG/0/4326"]]]"#;
         assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 4326);
+    }
+
+    #[test]
+    fn two_different_epsg_codes_in_one_block_are_ambiguous() {
+        for wkt in [
+            r#"PROJCS["x",AUTHORITY["EPSG","32617"],AUTHORITY["EPSG","32616"]]"#,
+            r#"PROJCRS["x",ID["EPSG",32617],ID["EPSG",32616]]"#,
+            r#"PROJCRS["x",ID["EPSG",32617],AUTHORITY["EPSG","32616"]]"#,
+        ] {
+            let msg = extract_epsg_from_wkt(wkt).unwrap_err().to_string();
+            assert!(msg.contains("ambiguous"), "msg: {msg}");
+            assert!(msg.contains("32617") && msg.contains("32616"), "msg: {msg}");
+        }
+    }
+
+    #[test]
+    fn repeated_identical_epsg_code_is_accepted() {
+        let wkt = r#"PROJCRS["x",ID["EPSG",32617],AUTHORITY["EPSG","32617"]]"#;
+        assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 32617);
+    }
+
+    #[test]
+    fn other_authorities_are_ignored_when_an_epsg_clause_exists() {
+        for wkt in [
+            r#"PROJCS["x",AUTHORITY["ESRI","102100"],AUTHORITY["EPSG","3857"]]"#,
+            r#"PROJCRS["x",ID["EPSG",3857],ID["ESRI",102100]]"#,
+        ] {
+            assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 3857, "{wkt}");
+        }
+    }
+
+    #[test]
+    fn comma_inside_a_quoted_authority_name_does_not_split_the_clause() {
+        let wkt = r#"PROJCRS["x",ID["EPSG",32617],ID["Some, Org",7]]"#;
+        assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 32617);
+        let wkt = r#"PROJCS["x",AUTHORITY["Some ""quoted"", Org","7"],AUTHORITY["EPSG","32617"]]"#;
+        assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 32617);
+    }
+
+    #[test]
+    fn malformed_epsg_clause_after_a_valid_one_is_an_error() {
+        let wkt = r#"PROJCS["x",AUTHORITY["EPSG","32617"],AUTHORITY["EPSG","zone"]]"#;
+        let msg = extract_epsg_from_wkt(wkt).unwrap_err().to_string();
+        assert!(msg.contains("not a valid EPSG u16"), "msg: {msg}");
+    }
+
+    #[test]
+    fn nested_authority_clauses_do_not_count_as_ambiguous() {
+        let wkt = r#"PROJCS["x",GEOGCS["g",AUTHORITY["EPSG","4326"]],
+            PROJECTION["tm",AUTHORITY["EPSG","9807"]],AUTHORITY["EPSG","32617"]]"#;
+        assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 32617);
+    }
+
+    #[test]
+    fn compound_with_two_horizontal_blocks_is_an_error() {
+        for wkt in [
+            r#"COMPD_CS["c",PROJCS["a",AUTHORITY["EPSG","32616"]],
+                PROJCS["b",AUTHORITY["EPSG","32617"]],VERT_CS["v",AUTHORITY["EPSG","5703"]]]"#,
+            r#"COMPOUNDCRS["c",PROJCRS["a",ID["EPSG",32616]],
+                GEOGCRS["b",ID["EPSG",4326]]]"#,
+        ] {
+            let msg = extract_epsg_from_wkt(wkt).unwrap_err().to_string();
+            assert!(msg.contains("more than one horizontal"), "msg: {msg}");
+        }
+    }
+
+    /// The scanner reads LAS records, sidecar files and E57 metadata, so its
+    /// messages name neither a container format nor a conversion tool.
+    #[test]
+    fn error_messages_are_context_neutral() {
+        for wkt in [
+            "",
+            "PROJCS",
+            "PROJCS[",
+            r#"VERT_CS["v",AUTHORITY["EPSG","5773"]]"#,
+            r#"PROJCS["x",UNIT["m",1]]"#,
+            r#"PROJCS["x",AUTHORITY["ESRI","102100"]]"#,
+        ] {
+            let msg = extract_epsg_from_wkt(wkt).unwrap_err().to_string();
+            assert!(msg.contains("CRS WKT"), "{wkt:?}: {msg}");
+            assert!(!msg.contains("VLR"), "{wkt:?}: {msg}");
+            assert!(!msg.contains("pdal"), "{wkt:?}: {msg}");
+        }
+    }
+
+    #[test]
+    fn missing_identifier_message_explains_the_esri_case() {
+        let msg = extract_epsg_from_wkt(r#"PROJCS["x",UNIT["m",1]]"#)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("no EPSG AUTHORITY/ID clause"), "msg: {msg}");
+        assert!(msg.contains("ESRI-style .prj"), "msg: {msg}");
+        assert!(msg.contains("EPSG code only"), "msg: {msg}");
+    }
+
+    /// Every error that echoes caller input stays short and still shows the
+    /// start of the echoed fragment followed by the truncation marker.
+    #[test]
+    fn long_input_fragments_are_truncated_in_errors() {
+        let long = "A".repeat(65_536);
+        let shown = format!("{}...", "A".repeat(ECHO_MAX_CHARS));
+        let cases = [
+            long.clone(),
+            format!("{long}["),
+            format!("{long}[]"),
+            format!(r#"PROJCS["x",AUTHORITY[{long}]]"#),
+            format!(r#"PROJCS["x",AUTHORITY["{long}","1"]]"#),
+            format!(r#"PROJCS["x",AUTHORITY["EPSG","{long}"]]"#),
+            format!(r#"PROJCS["x",AUTHORITY[{long},"1"]]"#),
+        ];
+        for wkt in &cases {
+            let msg = extract_epsg_from_wkt(wkt).unwrap_err().to_string();
+            assert!(msg.len() < 400, "len {}: {}", msg.len(), &msg[..200]);
+            assert!(msg.contains(&shown), "msg: {msg}");
+        }
+    }
+
+    #[test]
+    fn echo_fragment_keeps_short_text_and_cuts_on_a_char_boundary() {
+        assert_eq!(echo_fragment("EPSG"), "EPSG");
+        let exact = "é".repeat(ECHO_MAX_CHARS);
+        assert_eq!(echo_fragment(&exact), exact);
+        let over = "é".repeat(ECHO_MAX_CHARS + 1);
+        assert_eq!(echo_fragment(&over), format!("{exact}..."));
     }
 
     #[test]

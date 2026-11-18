@@ -20,6 +20,7 @@
 //!   sentinel (`0` / `32767`), which is *not* a resolvable CRS code but a
 //!   declaration of "no standard CRS" (`parse_crs_string`).
 //! - [`CrsError::Io`] — reading a sidecar `.prj` / `.qpj` file failed
+//!   or the file is larger than the 1 MiB sidecar limit
 //!   (`detect_crs_from_sidecar`).
 
 /// Consumer-agnostic CRS error. Each `tileforge-*` consumer maps this
@@ -54,9 +55,9 @@ pub enum CrsError {
     )]
     SentinelCode(u16),
 
-    /// An I/O error reading a sidecar `.prj` / `.qpj` file. Carries the
-    /// path and the underlying message so consumers can re-tag it as
-    /// their own I/O error variant.
+    /// An I/O error reading a sidecar `.prj` / `.qpj` file, or a sidecar
+    /// larger than the 1 MiB limit. Carries the path and the underlying
+    /// message as separate fields; `Display` joins them as `path: detail`.
     #[error("{path}: {detail}")]
     Io { path: String, detail: String },
 }
