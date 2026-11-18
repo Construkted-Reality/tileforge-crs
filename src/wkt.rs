@@ -7,7 +7,9 @@
 //! metadata). PDAL, lastools, QGIS and GDAL write an
 //! `AUTHORITY["EPSG","NNNN"]` clause; ESRI-style `.prj` files usually do
 //! not, and such a WKT fails because this scanner resolves a CRS by its
-//! EPSG code only. Square brackets are the only supported delimiters.
+//! EPSG code only. Square brackets are the only supported delimiters,
+//! and every `[` must open the block of an identifier. One leading UTF-8
+//! byte order mark is ignored.
 //!
 //! Supported root blocks — both **WKT1** and **WKT2** (LAS 1.4 producers
 //! increasingly emit WKT2):
@@ -20,8 +22,16 @@
 //! error. For a compound CRS the scanner descends into the one horizontal
 //! subblock (a second one is an error) and reports the vertical component as stripped
 //! via `WktExtraction::vertical_stripped` — the caller decides what to do
-//! (mesh warns; PC warns for LAS WKT records and ignores it for sidecars). BOUNDCRS and TOWGS84 operations are rejected
-//! because an EPSG code alone cannot preserve their explicit transformation.
+//! (mesh warns; PC warns for LAS WKT records and ignores it for sidecars).
+//!
+//! BOUNDCRS and TOWGS84 operations are rejected because an EPSG code alone
+//! cannot preserve their explicit transformation. One case is accepted: a
+//! BOUNDCRS whose SOURCECRS is a vertical CRS (`VERTCRS`, `VERTICALCRS` or
+//! `VERT_CS`), as PROJ writes the geoid model of a compound CRS. Its
+//! operation applies to heights only and is discarded with the vertical
+//! component, so the result sets `vertical_stripped`. Such a BOUNDCRS at
+//! the root is an error, because the root must be a horizontal or compound
+//! CRS.
 
 use crate::error::CrsError;
 
@@ -41,13 +51,28 @@ pub struct WktExtraction {
 /// that passes the code on to [`Reprojector::new`](crate::Reprojector::new)
 /// must first check it with [`is_geotiff_sentinel`](crate::is_geotiff_sentinel).
 ///
+/// One leading UTF-8 byte order mark (U+FEFF), as Windows Notepad writes
+/// it, is ignored. A byte order mark at any other position is not special.
+///
 /// # Errors
 ///
-/// [`CrsError::Parse`] when the WKT has an unsupported root, unbalanced
-/// brackets, a `(` or `)` delimiter, a `BOUNDCRS` or `TOWGS84` operation,
-/// no EPSG `AUTHORITY`/`ID` clause, two different EPSG codes in one
-/// block, or a compound CRS with more than one horizontal block.
+/// [`CrsError::Parse`] when the WKT has an unsupported root (including a
+/// `BOUNDCRS` on a vertical CRS), unbalanced brackets, a `[` that does not
+/// open the block of an identifier, a `]` that closes no block, a `(` or
+/// `)` delimiter, a `BOUNDCRS` or `TOWGS84` operation outside the vertical
+/// leg of a compound CRS, no EPSG `AUTHORITY`/`ID` clause, two different
+/// EPSG codes in one block, or a compound CRS with more than one
+/// horizontal block.
 pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
+    extract_epsg(wkt.strip_prefix(BYTE_ORDER_MARK).unwrap_or(wkt))
+}
+
+/// UTF-8 byte order mark. Windows Notepad writes it at the start of a file.
+pub(crate) const BYTE_ORDER_MARK: char = '\u{feff}';
+
+/// [`extract_epsg_from_wkt`] for text whose byte order mark, if any, is
+/// already removed.
+pub(crate) fn extract_epsg(wkt: &str) -> Result<WktExtraction, CrsError> {
     reject_explicit_transforms(wkt)?;
     let bytes = wkt.as_bytes();
     let after_ws = skip_whitespace(bytes, 0);
@@ -91,7 +116,7 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
                     )));
                 }
             };
-            let inner = extract_epsg_from_wkt(horizontal)?;
+            let inner = extract_epsg(horizontal)?;
             Ok(WktExtraction {
                 epsg: inner.epsg,
                 vertical_stripped: true,
@@ -106,6 +131,13 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
                 vertical_stripped: false,
             })
         }
+        // The transform gate lets a `BOUNDCRS` through only when its source
+        // is a vertical CRS, which carries no horizontal position.
+        "BOUNDCRS" => Err(CrsError::parse(
+            "CRS WKT root is a BOUNDCRS on a vertical CRS, which has no horizontal \
+             position; the root must be a horizontal or compound CRS"
+                .to_string(),
+        )),
         _ => Err(CrsError::parse(format!(
             "CRS WKT root is unexpected '{id_shown}' (want a WKT1 PROJCS/GEOGCS/GEOCCS/COMPD_CS \
              or WKT2 PROJCRS/GEOGCRS/GEODCRS/COMPOUNDCRS)"
@@ -120,18 +152,43 @@ const HORIZONTAL_KEYWORDS: &[&str] = &[
     "PROJCRS", "GEOGCRS", "GEODCRS", // WKT2
 ];
 
-/// Scan every nesting level without recursion and reject two kinds of
+/// Vertical-CRS keywords, WKT1 and WKT2. A `BOUNDCRS` whose source CRS
+/// starts with one of them is the vertical leg of a compound CRS.
+const VERTICAL_KEYWORDS: &[&str] = &["VERT_CS", "VERTCRS", "VERTICALCRS"];
+
+/// Scan every nesting level without recursion and reject three kinds of
 /// input outside quoted strings:
 ///
 /// - the identifiers `BOUNDCRS` and `TOWGS84` (ASCII case-insensitive),
 ///   whatever character follows them, because an EPSG code alone cannot
 ///   carry their explicit transformation;
 /// - a `(` or `)` delimiter, because the block scanner understands square
-///   brackets only.
+///   brackets only;
+/// - a `[` that does not open the block of an identifier (the identifier
+///   and optional ASCII whitespace come directly before it), and a `]`
+///   that closes no open `[`. The block walkers skip a block only when it
+///   opens after an identifier, so any other bracket would let them read
+///   nested clauses as if they were at depth 0.
 ///
-/// Quoted names (with `""` escapes) are exempt from both checks.
+/// One exception: a `BOUNDCRS[...]` block whose `SOURCECRS[...]` child
+/// holds a vertical CRS (see [`bound_crs_has_vertical_source`]), and which
+/// is a direct child of a `COMPD_CS`/`COMPOUNDCRS` root or the root itself,
+/// is not scanned for those identifiers. Its operation applies to heights only,
+/// and the scanner discards the vertical component of a compound CRS, so
+/// the operation is discarded with it. The delimiter and bracket rules
+/// still apply inside that block.
+///
+/// Quoted names (with `""` escapes) are exempt from all checks.
 fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
     let bytes = wkt.as_bytes();
+    // Bracket depth of the scan position, and the depth at which an
+    // exempt vertical `BOUNDCRS` block opened while the scan is inside it.
+    let mut depth: usize = 0;
+    let mut exempt_from: Option<usize> = None;
+    // Number of top-level blocks opened so far, and whether the first one
+    // (the root) is a compound CRS.
+    let mut top_level_blocks: usize = 0;
+    let mut root_is_compound = false;
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'"' {
@@ -153,19 +210,98 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
                  square-bracket delimiters only",
                 char::from(bytes[i])
             )));
-        } else if let Some((id, end)) = read_identifier(bytes, i) {
-            if id.eq_ignore_ascii_case("BOUNDCRS") || id.eq_ignore_ascii_case("TOWGS84") {
-                return Err(CrsError::parse(format!(
-                    "{} declares an explicit datum transformation that this EPSG-only parser cannot preserve; reproject the data with that transformation before conversion",
-                    id.to_ascii_uppercase()
-                )));
+        } else if bytes[i] == b'[' {
+            return Err(CrsError::parse(
+                "CRS WKT contains a '[' that does not open the block of an identifier; \
+                 every '[' must follow a keyword such as PROJCS or AUTHORITY"
+                    .to_string(),
+            ));
+        } else if bytes[i] == b']' {
+            if depth == 0 {
+                return Err(CrsError::parse(
+                    "CRS WKT contains a ']' that closes no block".to_string(),
+                ));
             }
-            i = end;
+            depth -= 1;
+            if exempt_from == Some(depth) {
+                exempt_from = None;
+            }
+            i += 1;
+        } else if let Some((id, end)) = read_identifier(bytes, i) {
+            if exempt_from.is_none() {
+                // A vertical `BOUNDCRS` is exempt as a leg of a compound
+                // root, and as the root itself, which the caller then
+                // refuses with its own message. Nested anywhere else it is
+                // not a vertical leg.
+                let leg_position = match depth {
+                    0 => top_level_blocks == 0,
+                    1 => top_level_blocks == 1 && root_is_compound,
+                    _ => false,
+                };
+                if leg_position
+                    && id.eq_ignore_ascii_case("BOUNDCRS")
+                    && bound_crs_has_vertical_source(wkt, end)
+                {
+                    exempt_from = Some(depth);
+                } else if id.eq_ignore_ascii_case("BOUNDCRS") || id.eq_ignore_ascii_case("TOWGS84")
+                {
+                    return Err(CrsError::parse(format!(
+                        "{} declares an explicit datum transformation that this EPSG-only parser cannot preserve; reproject the data with that transformation before conversion",
+                        id.to_ascii_uppercase()
+                    )));
+                }
+            }
+            let open = skip_whitespace(bytes, end);
+            if bytes.get(open) == Some(&b'[') {
+                if depth == 0 {
+                    if top_level_blocks == 0 {
+                        root_is_compound = id.eq_ignore_ascii_case("COMPD_CS")
+                            || id.eq_ignore_ascii_case("COMPOUNDCRS");
+                    }
+                    top_level_blocks += 1;
+                }
+                depth += 1;
+                i = open + 1;
+            } else {
+                i = end;
+            }
         } else {
             i += 1;
         }
     }
     Ok(())
+}
+
+/// Return `true` when the `BOUNDCRS` identifier that ends at `after_id` is
+/// followed (after optional ASCII whitespace) by a balanced `[...]` block
+/// with exactly one depth-0 `SOURCECRS[...]` child, and the first token of
+/// that child is a vertical-CRS identifier ([`VERTICAL_KEYWORDS`], ASCII
+/// case-insensitive) that opens a block. Any other shape returns `false`.
+fn bound_crs_has_vertical_source(wkt: &str, after_id: usize) -> bool {
+    let bytes = wkt.as_bytes();
+    let open = skip_whitespace(bytes, after_id);
+    if bytes.get(open) != Some(&b'[') {
+        return false;
+    }
+    let Some(close) = find_matching_bracket(bytes, open) else {
+        return false;
+    };
+    let [source] = find_child_blocks(&wkt[open + 1..close], &["SOURCECRS"])[..] else {
+        return false;
+    };
+    let source = source.as_bytes();
+    let Some(source_open) = source.iter().position(|&c| c == b'[') else {
+        return false;
+    };
+    let child_start = skip_whitespace(source, source_open + 1);
+    let Some((child, after_child)) = read_identifier(source, child_start) else {
+        return false;
+    };
+    let child_open = skip_whitespace(source, after_child);
+    source.get(child_open) == Some(&b'[')
+        && VERTICAL_KEYWORDS
+            .iter()
+            .any(|k| child.eq_ignore_ascii_case(k))
 }
 
 /// Longest fragment of caller input, in characters, that an error message
@@ -771,6 +907,32 @@ mod tests {
         assert_eq!(echo_fragment(&exact), exact);
         let over = "é".repeat(ECHO_MAX_CHARS + 1);
         assert_eq!(echo_fragment(&over), format!("{exact}..."));
+    }
+
+    #[test]
+    fn leading_byte_order_mark_is_ignored() {
+        for wkt in [
+            format!("\u{feff}{KINGSTON_WKT}"),
+            format!("\u{feff}\r\n  {KINGSTON_WKT}"),
+        ] {
+            assert_eq!(
+                extract_epsg_from_wkt(&wkt).unwrap(),
+                WktExtraction {
+                    epsg: 32617,
+                    vertical_stripped: false
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn byte_order_mark_after_the_start_is_not_special() {
+        for wkt in [
+            format!("\u{feff}\u{feff}{KINGSTON_WKT}"),
+            format!(" \u{feff}{KINGSTON_WKT}"),
+        ] {
+            assert!(extract_epsg_from_wkt(&wkt).is_err(), "{wkt:?}");
+        }
     }
 
     #[test]
