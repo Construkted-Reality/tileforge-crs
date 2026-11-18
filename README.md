@@ -31,6 +31,12 @@ A release here changes nothing downstream until a consumer moves its pin.
   A sidecar that declares a sentinel is a valid "no CRS" declaration, so
   `detect_crs_from_sidecar` returns it and leaves the policy to the caller.
 - Vertical-datum policy belongs to the consumer. The parser only reports `vertical_stripped`.
+- `to_ecef` does not check that a coordinate belongs to its CRS. A projection returns a
+  position for almost any input, so millimetres read as metres give a valid position near
+  a pole. Call `Reprojector::check_area_of_use` once with the dataset centre. It returns a
+  warning from 1 to 20 degrees outside the EPSG area of use and an error beyond 20 degrees.
+  It cannot detect a wrong CRS whose coordinates fall inside the area (a neighbouring UTM
+  zone, the other UTM hemisphere).
 
 The rustdoc in `src/lib.rs` is the full API reference.
 
@@ -46,6 +52,15 @@ cargo fmt --check
 The parity oracle compares against frozen PROJ grids in `tests/fixtures/`.
 The `proj` FFI crate is deliberately not a dependency. Regenerate fixtures with `cs2cs`
 on a machine that has PROJ installed.
+
+## Area-of-use table
+
+`src/area_of_use_table.rs` is generated from the catalogue. To regenerate it after an
+upgrade of `crs-definitions`:
+
+```sh
+python3 tools/gen_area_of_use.py ~/.cargo/registry/src/*/crs-definitions-0.4.0/src/defs.rs .
+```
 
 ## Documentation
 
