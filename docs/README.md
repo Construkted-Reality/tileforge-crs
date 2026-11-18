@@ -13,7 +13,6 @@ Removed documents are listed in [REMOVED.md](REMOVED.md) with the commit that st
 ## Open items
 
 - MT1 remainder: no frozen PROJ fixture for a non-WGS84 geographic source (EPSG:4269) and no EPSG:4979 grid. Both need a machine with PROJ installed.
-- `proj4rs` 0.1.10 ignores the `+k_0=` scale factor. 185 catalogue definitions that get no datum shift carry it (176 of them build), for example the Oregon Coordinate Reference System zones. They are therefore 8 m to 16 m and more from the PROJ position. Issue #7 has the measurement and a possible correction.
 - EPSG:6988 to 6991 (IG05/12 Intermediate CRS and Israeli Grid 05/12) are 78 m from WGS 84 and get no datum shift and no warning. PROJ states their operation as an inverse Helmert step, which a `+towgs84` clause cannot express exactly. Issue #10 has the list of such cases.
 - A geographic CRS with a prime meridian other than Greenwich (EPSG:4801 to 4820 and others) is refused, because `proj4rs` ignores `+pm=` for a geographic source.
 - `EPSG:+123` parses as 123, because `u16::parse` accepts a leading `+` (`src/sidecar.rs`). Harmless; tighten it if the parser changes.

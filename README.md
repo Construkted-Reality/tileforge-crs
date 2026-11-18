@@ -106,9 +106,10 @@ list. After a regeneration, `cargo test --test datum_shift_parity` must pass. If
 a CRS, add that CRS to the exclusion list with the reason and regenerate.
 
 `proj4rs` 0.1.10 misreads `+k_0=`, an ellipsoid given by its minor axis, and `+pm=`.
-`DatumShift::definition_with_shift` restates these for each shifted CRS. Catalogue CRSs
-that get no datum shift are not restated; see the open items in
-[docs/README.md](docs/README.md).
+`Reprojector::new` restates these for every catalogue definition, shifted or not.
+`tools/gen_restatement_reference.py` generates the PROJ reference fixture for the CRSs
+without a datum shift whose definition writes `+k_0=`; `cargo test --test
+restatement_parity` checks it. Run the tool after the datum shift table changes.
 
 Limits. A Helmert transformation is an approximation. Where a national grid file exists
 (OSTN15, BETA2007 and so on) the Helmert position differs from the grid position by
