@@ -22,6 +22,8 @@
 //!   silently ignore: a malformed `.prj` next to a PLY is almost always
 //!   a user mistake (renamed file, half-finished export).
 
+use std::fs::File;
+use std::io::{ErrorKind, Read};
 use std::path::Path;
 
 use crate::error::CrsError;
@@ -35,6 +37,10 @@ use crate::wkt::extract_epsg_from_wkt;
 /// case-sensitive filesystem those are distinct files. Lowercase is tried
 /// first so it keeps precedence when both cases exist.
 const SIDECAR_SUFFIXES: &[&str] = &[".prj", ".PRJ", ".qpj", ".QPJ"];
+
+/// Largest sidecar body read, in bytes (1 MiB). A CRS definition is a few
+/// kilobytes at most, so a larger file is refused before it is parsed.
+const MAX_SIDECAR_BYTES: u64 = 1024 * 1024;
 
 /// Outcome of parsing a CRS string. Carries the resolved EPSG plus
 /// whether a vertical / compound component was present and dropped.
@@ -65,18 +71,27 @@ pub struct SidecarCrs {
 }
 
 /// Look for a sidecar `.prj`/`.qpj` (or uppercase `.PRJ`/`.QPJ`) next to
-/// `input`. Returns the first sidecar that parses cleanly. Both suffix
-/// cases are probed so a `foo.PRJ` from legacy ESRI/Windows tooling next
-/// to `foo.ply` is found on a case-sensitive filesystem; the base
-/// filename stem must still match. Lowercase suffixes take precedence.
+/// `input`. Suffixes are probed in the order `.prj`, `.PRJ`, `.qpj`,
+/// `.QPJ`, and the first sidecar that **exists** is used: if it fails to
+/// read or parse, the call returns that error and does not try the later
+/// suffixes. Both suffix cases are probed so a `foo.PRJ` from legacy
+/// ESRI/Windows tooling next to `foo.ply` is found on a case-sensitive
+/// filesystem; the base filename stem must still match.
+///
+/// # Errors
+///
+/// - [`CrsError::Io`] when the sidecar cannot be read, is not UTF-8, or is
+///   larger than 1 MiB (1,048,576 bytes). The size check reads at most one
+///   byte past the limit.
+/// - [`CrsError::Parse`] when the body is neither the `EPSG:NNNNN` short
+///   form nor a supported WKT body.
 pub fn detect_crs_from_sidecar(input: &Path) -> Result<Option<SidecarCrs>, CrsError> {
     for suffix in SIDECAR_SUFFIXES {
         let candidate = input.with_extension(suffix.trim_start_matches('.'));
         if !candidate.is_file() {
             continue;
         }
-        let body = std::fs::read_to_string(&candidate)
-            .map_err(|e| CrsError::io(&candidate, format!("read CRS sidecar: {e}")))?;
+        let body = read_sidecar_bounded(&candidate)?;
         let parsed = match parse_crs_string(body.trim()) {
             Ok(p) => p,
             // A sidecar declaring a GeoTIFF sentinel (0 / 32767) is not a
@@ -105,6 +120,46 @@ pub fn detect_crs_from_sidecar(input: &Path) -> Result<Option<SidecarCrs>, CrsEr
         }));
     }
     Ok(None)
+}
+
+/// Read a sidecar body as UTF-8, refusing a file larger than
+/// [`MAX_SIDECAR_BYTES`]. At most `MAX_SIDECAR_BYTES + 1` bytes are read or
+/// allocated, whatever size the file reports.
+fn read_sidecar_bounded(path: &Path) -> Result<String, CrsError> {
+    let read_err = |e: std::io::Error| CrsError::io(path, format!("read CRS sidecar: {e}"));
+    let file = File::open(path).map_err(read_err)?;
+    let reported_len = file.metadata().map_or(0, |m| m.len());
+    let first_capacity = usize::try_from(reported_len.min(MAX_SIDECAR_BYTES) + 1).unwrap_or(1);
+    let mut bytes = Vec::with_capacity(first_capacity);
+    let mut reader = file.take(MAX_SIDECAR_BYTES + 1);
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(read_err(e)),
+        };
+        // `reserve_exact` keeps the capacity at the bytes read so far, so a
+        // file that reports a wrong length still cannot raise it past the cap.
+        bytes.reserve_exact(n);
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+    if bytes.len() as u64 > MAX_SIDECAR_BYTES {
+        return Err(CrsError::io(
+            path,
+            format!(
+                "CRS sidecar is larger than the {MAX_SIDECAR_BYTES}-byte limit; \
+                 a CRS definition is a few kilobytes, so this file is not read"
+            ),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        read_err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ))
+    })
 }
 
 /// Parse a CRS string into a [`ParsedCrs`] (EPSG + vertical-stripped
@@ -269,6 +324,58 @@ mod tests {
         // options.
         assert!(msg.contains("EPSG:NNNNN"), "got: {msg}");
         assert!(msg.contains("WKT"), "got: {msg}");
+    }
+
+    #[test]
+    fn oversized_sidecar_fails_with_size_limit_error() {
+        let ply = write_tmp("oversized.ply", "ply\n");
+        let prj = ply.with_extension("prj");
+        let f = std::fs::File::create(&prj).unwrap();
+        f.set_len(8 * 1024 * 1024).unwrap();
+        let err = detect_crs_from_sidecar(&ply).unwrap_err();
+        let CrsError::Io { path, detail } = &err else {
+            panic!("want Io got {err:?}");
+        };
+        assert_eq!(path, &prj.display().to_string());
+        assert!(
+            detail.contains(&MAX_SIDECAR_BYTES.to_string()),
+            "got: {detail}"
+        );
+        assert!(detail.contains("limit"), "got: {detail}");
+    }
+
+    #[test]
+    fn sidecar_at_size_limit_is_read() {
+        let ply = write_tmp("at-limit.ply", "ply\n");
+        let prj = ply.with_extension("prj");
+        let limit = usize::try_from(MAX_SIDECAR_BYTES).unwrap();
+        let mut body = KINGSTON_WKT.to_string();
+        body.push_str(&" ".repeat(limit - body.len()));
+        assert_eq!(body.len(), limit);
+        std::fs::write(&prj, &body).unwrap();
+        assert_eq!(detect_crs_from_sidecar(&ply).unwrap().unwrap().epsg, 32617);
+
+        body.push(' ');
+        std::fs::write(&prj, &body).unwrap();
+        assert!(matches!(
+            detect_crs_from_sidecar(&ply).unwrap_err(),
+            CrsError::Io { .. }
+        ));
+    }
+
+    #[test]
+    fn non_utf8_sidecar_is_io_error() {
+        let ply = write_tmp("latin1.ply", "ply\n");
+        let prj = ply.with_extension("prj");
+        std::fs::write(&prj, b"EPSG:\xff32617").unwrap();
+        let err = detect_crs_from_sidecar(&ply).unwrap_err();
+        let CrsError::Io { detail, .. } = &err else {
+            panic!("want Io got {err:?}");
+        };
+        assert_eq!(
+            detail,
+            "read CRS sidecar: stream did not contain valid UTF-8"
+        );
     }
 
     #[test]
