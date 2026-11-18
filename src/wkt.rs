@@ -41,6 +41,9 @@ pub struct WktExtraction {
 /// that passes the code on to [`Reprojector::new`](crate::Reprojector::new)
 /// must first check it with [`is_geotiff_sentinel`](crate::is_geotiff_sentinel).
 ///
+/// One leading UTF-8 byte order mark (U+FEFF), as Windows Notepad writes
+/// it, is ignored. A byte order mark at any other position is not special.
+///
 /// # Errors
 ///
 /// [`CrsError::Parse`] when the WKT has an unsupported root, unbalanced
@@ -48,6 +51,15 @@ pub struct WktExtraction {
 /// no EPSG `AUTHORITY`/`ID` clause, two different EPSG codes in one
 /// block, or a compound CRS with more than one horizontal block.
 pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
+    extract_epsg(wkt.strip_prefix(BYTE_ORDER_MARK).unwrap_or(wkt))
+}
+
+/// UTF-8 byte order mark. Windows Notepad writes it at the start of a file.
+pub(crate) const BYTE_ORDER_MARK: char = '\u{feff}';
+
+/// [`extract_epsg_from_wkt`] for text whose byte order mark, if any, is
+/// already removed.
+pub(crate) fn extract_epsg(wkt: &str) -> Result<WktExtraction, CrsError> {
     reject_explicit_transforms(wkt)?;
     let bytes = wkt.as_bytes();
     let after_ws = skip_whitespace(bytes, 0);
@@ -91,7 +103,7 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
                     )));
                 }
             };
-            let inner = extract_epsg_from_wkt(horizontal)?;
+            let inner = extract_epsg(horizontal)?;
             Ok(WktExtraction {
                 epsg: inner.epsg,
                 vertical_stripped: true,
@@ -858,6 +870,32 @@ mod tests {
         assert_eq!(echo_fragment(&exact), exact);
         let over = "é".repeat(ECHO_MAX_CHARS + 1);
         assert_eq!(echo_fragment(&over), format!("{exact}..."));
+    }
+
+    #[test]
+    fn leading_byte_order_mark_is_ignored() {
+        for wkt in [
+            format!("\u{feff}{KINGSTON_WKT}"),
+            format!("\u{feff}\r\n  {KINGSTON_WKT}"),
+        ] {
+            assert_eq!(
+                extract_epsg_from_wkt(&wkt).unwrap(),
+                WktExtraction {
+                    epsg: 32617,
+                    vertical_stripped: false
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn byte_order_mark_after_the_start_is_not_special() {
+        for wkt in [
+            format!("\u{feff}\u{feff}{KINGSTON_WKT}"),
+            format!(" \u{feff}{KINGSTON_WKT}"),
+        ] {
+            assert!(extract_epsg_from_wkt(&wkt).is_err(), "{wkt:?}");
+        }
     }
 
     #[test]

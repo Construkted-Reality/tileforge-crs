@@ -8,7 +8,7 @@
 //!
 //! - **OGC WKT** — full `PROJCS[...]` / `GEOGCS[...]` / `GEOCCS[...]`
 //!   / `COMPD_CS[...]` string or its WKT2 equivalent.
-//!   Reuses [`extract_epsg_from_wkt`].
+//!   Reuses [`extract_epsg_from_wkt`](crate::extract_epsg_from_wkt).
 //! - **Short-form `EPSG:NNNNN`** — single-line content produced by
 //!   `gdalsrsinfo -o proj` and many lidar-export pipelines.
 //!
@@ -29,7 +29,7 @@ use std::path::Path;
 
 use crate::error::CrsError;
 use crate::reproject::is_geotiff_sentinel;
-use crate::wkt::{echo_fragment, extract_epsg_from_wkt};
+use crate::wkt::{BYTE_ORDER_MARK, echo_fragment, extract_epsg};
 
 /// Filename suffixes tried in order. `.prj` is the GIS canonical (ESRI,
 /// GDAL, PDAL, lastools); `.qpj` is QGIS's WKT-2 variant. Both carry the
@@ -171,13 +171,17 @@ fn read_sidecar_bounded(path: &Path) -> Result<String, CrsError> {
 ///   whitespace. Never carries a vertical component.
 /// - **OGC WKT 1 or WKT 2** — `PROJCS[...]`, `GEOGCS[...]`, `GEOCCS[...]`,
 ///   `COMPD_CS[...]`, `PROJCRS[...]`, `GEOGCRS[...]`, `GEODCRS[...]`, or
-///   `COMPOUNDCRS[...]`. Body parsed via [`extract_epsg_from_wkt`]; a
+///   `COMPOUNDCRS[...]`. Body parsed via
+///   [`extract_epsg_from_wkt`](crate::extract_epsg_from_wkt); a
 ///   compound CRS sets `vertical_stripped = true`.
 ///
 /// Used by both [`detect_crs_from_sidecar`] (sidecar `.prj`/`.qpj`)
 /// and the E57 reader's `coordinateMetadata` ingest. Callers should
-/// pass an already-trimmed string. Errors with a single message naming
-/// both supported forms; callers wrap with source-specific context.
+/// pass an already-trimmed string. One leading UTF-8 byte order mark
+/// (U+FEFF), as Windows Notepad writes it, is ignored together with the
+/// whitespace after it; a byte order mark at any other position is not
+/// special. Errors with a single message naming both supported forms;
+/// callers wrap with source-specific context.
 ///
 /// # Sentinel rejection
 ///
@@ -191,6 +195,10 @@ fn read_sidecar_bounded(path: &Path) -> Result<String, CrsError> {
 /// value to [`Reprojector::new`](crate::Reprojector::new) / the proj4
 /// catalogue.
 pub fn parse_crs_string(body: &str) -> Result<ParsedCrs, CrsError> {
+    let body = match body.strip_prefix(BYTE_ORDER_MARK) {
+        Some(rest) => rest.trim_start(),
+        None => body,
+    };
     if let Some(short_form) = parse_short_form_epsg(body) {
         let epsg = short_form?;
         if is_geotiff_sentinel(epsg) {
@@ -201,7 +209,7 @@ pub fn parse_crs_string(body: &str) -> Result<ParsedCrs, CrsError> {
             vertical_stripped: false,
         });
     }
-    let parsed = extract_epsg_from_wkt(body).map(|e| ParsedCrs {
+    let parsed = extract_epsg(body).map(|e| ParsedCrs {
         epsg: e.epsg,
         vertical_stripped: e.vertical_stripped,
     });
@@ -529,6 +537,70 @@ mod tests {
         // it must still parse (and later fail as an unknown EPSG, not here).
         let p = parse_crs_string("EPSG:32768").unwrap();
         assert_eq!(p.epsg, 32768);
+    }
+
+    /// Bodies that start with a UTF-8 byte order mark, as Windows Notepad
+    /// saves them, and the EPSG code each one declares.
+    const BOM_BODIES: &[(&str, u16)] = &[
+        ("\u{feff}EPSG:32614", 32614),
+        ("\u{feff}  epsg : 26917\r\n", 26917),
+        ("\u{feff}\r\nEPSG:32617", 32617),
+    ];
+
+    #[test]
+    fn parse_crs_string_ignores_a_leading_byte_order_mark() {
+        for &(body, epsg) in BOM_BODIES {
+            assert_eq!(
+                parse_crs_string(body.trim()).unwrap().epsg,
+                epsg,
+                "{body:?}"
+            );
+        }
+        for body in [
+            format!("\u{feff}{KINGSTON_WKT}"),
+            format!("\u{feff}\r\n{KINGSTON_WKT}"),
+            format!("\u{feff} \n\t{KINGSTON_WKT}"),
+        ] {
+            let p = parse_crs_string(body.trim()).unwrap();
+            assert_eq!(p.epsg, 32617, "{:?}", &body[..8]);
+            assert!(!p.vertical_stripped);
+        }
+        let p = parse_crs_string(&format!("\u{feff}{COMPD_WKT}")).unwrap();
+        assert_eq!(p.epsg, 32617);
+        assert!(p.vertical_stripped);
+    }
+
+    #[test]
+    fn byte_order_mark_is_ignored_only_at_the_start() {
+        for body in [
+            "\u{feff}\u{feff}EPSG:32617".to_string(),
+            " \u{feff}EPSG:32617".to_string(),
+            "EPSG:\u{feff}32617".to_string(),
+            format!("\u{feff}\u{feff}{KINGSTON_WKT}"),
+            format!(" \u{feff}{KINGSTON_WKT}"),
+        ] {
+            assert!(parse_crs_string(&body).is_err(), "{body:?}");
+        }
+    }
+
+    #[test]
+    fn sidecar_with_a_leading_byte_order_mark_resolves() {
+        let mut cases: Vec<(String, u16)> = BOM_BODIES
+            .iter()
+            .map(|&(body, epsg)| (body.to_string(), epsg))
+            .collect();
+        cases.push((format!("\u{feff}{KINGSTON_WKT}"), 32617));
+        cases.push((format!("\u{feff}\r\n{KINGSTON_WKT}\r\n"), 32617));
+        for (n, (body, epsg)) in cases.iter().enumerate() {
+            let ply = write_tmp(&format!("bom-{n}.ply"), "ply\n");
+            let prj = ply.with_extension("prj");
+            std::fs::write(&prj, body).unwrap();
+            let r = detect_crs_from_sidecar(&ply)
+                .unwrap_or_else(|e| panic!("{body:?}: {e}"))
+                .unwrap();
+            assert_eq!(r.epsg, *epsg, "{body:?}");
+            assert!(!r.vertical_stripped);
+        }
     }
 
     #[test]
