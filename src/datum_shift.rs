@@ -10,7 +10,11 @@
 //!   WGS 84 by tens to hundreds of metres.
 //! - For a GRS80 or WGS 84 ellipsoid the datum is usually within about 2 m
 //!   of WGS 84 (NAD83, ETRS89, GDA94). A few are not: GGRS87 (Greece) is
-//!   326 m away, VN-2000 (Vietnam) 225 m, Israel 1993 78 m.
+//!   326 m away, VN-2000 (Vietnam) 225 m, Israel 1993 78 m. Those are in
+//!   the table. Known limit: EPSG:6988 to 6991 (IG05/12 and Israeli Grid
+//!   05/12) are 78 m away and are not in the table, because PROJ states
+//!   their operation as an inverse Helmert step, which a `+towgs84` clause
+//!   cannot express exactly.
 //!
 //! This module supplies the missing shift from a generated table of Helmert
 //! transformations (`datum_shift_table`). Each CRS in the table maps to the
@@ -20,7 +24,8 @@
 //!
 //! A CRS on a foreign ellipsoid that has no verified operation is refused:
 //! its position on WGS 84 cannot be derived. A CRS on GRS80 or WGS 84 is in
-//! the table only when the shift is larger than 5 m, and it is never refused.
+//! the table only when the first operation in the PROJ ranking is a Helmert
+//! shift of more than 5 m, and it is never refused.
 //! A definition on a sphere has no geodetic datum; its coordinates are read
 //! as WGS 84 values, as PROJ does.
 
@@ -270,7 +275,11 @@ mod tests {
                     DatumShiftRule::NotNeeded,
                     "EPSG:{code} is on a foreign ellipsoid and has no rule"
                 ),
-                ShiftClass::Wgs84 => {}
+                ShiftClass::Wgs84 => assert_ne!(
+                    rule,
+                    DatumShiftRule::Unavailable,
+                    "EPSG:{code} is on GRS80 or WGS 84 and must not be refused"
+                ),
                 ShiftClass::None => assert_eq!(
                     rule,
                     DatumShiftRule::NotNeeded,

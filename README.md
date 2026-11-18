@@ -39,7 +39,10 @@ A release here changes nothing downstream until a consumer moves its pin.
   warning. The shift moves the horizontal position only. Height passes through as a
   height above the WGS 84 ellipsoid.
 - Other GRS80 or WGS 84 based datums (NAD83, ETRS89, GDA94 and so on) get no shift. They
-  are within about 2 m of WGS 84.
+  are within about 2 m of WGS 84. Known limit: EPSG:6988 to 6991 (IG05/12 Intermediate CRS
+  and Israeli Grid 05/12) are 78 m from WGS 84 and get no shift and no warning, because
+  PROJ states their operation as an inverse Helmert step that a `+towgs84` clause cannot
+  express exactly.
 - `Reprojector::new` fails with `CrsError::DatumShiftUnavailable` for a CRS on a foreign
   ellipsoid when no verified static Helmert transformation is available: the PROJ
   database has none, or `proj4rs` cannot reproduce the PROJ position

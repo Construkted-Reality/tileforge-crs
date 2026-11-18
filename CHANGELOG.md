@@ -74,12 +74,14 @@ revision, not by version, so a version bump here does not by itself break them.
   325 m for the Greek Grid, with a median of 112 m over all affected CRSs.
   `Reprojector` now applies a Helmert transformation: the first static Helmert
   operation in the ranking that PROJ 9.8.1 makes, without grid files, for the
-  area of use of the CRS. This changes the output for 2,014 catalogue CRSs
-  (1,954 on an ellipsoid other than GRS80 or WGS 84, and 60 on GRS80 or WGS 84
-  whose datum is more than 5 m from WGS 84) and for no other CRS. Every one of
-  them agrees with PROJ 9.8.1 to 10 µm on the reference fixture. The output of
-  175 of them (GSK-2011, a zero-parameter operation) moves less than 1 m.
-- For the same 2,014 CRSs, restate what `proj4rs` 0.1.10 misreads in a
+  area of use of the CRS. This changes the output for 1,989 catalogue CRSs
+  (1,954 on an ellipsoid other than GRS80 or WGS 84, and 35 on GRS80 or WGS 84
+  whose first-ranked PROJ operation is a Helmert shift of more than 5 m) and
+  for no other CRS. Every one of them agrees with PROJ 9.8.1 to 10 µm on the
+  reference fixture. The output of 175 of them (GSK-2011, a zero-parameter
+  operation) moves less than 1 m. Known limit: EPSG:6988 to 6991 (IG05/12 and
+  Israeli Grid 05/12) are 78 m from WGS 84 and get no shift.
+- For the same 1,989 CRSs, restate what `proj4rs` 0.1.10 misreads in a
   catalogue definition: the `+k_0=` scale factor (ignored), an ellipsoid
   given by its minor axis (wrong flattening in the Transverse Mercator
   series), and a `+pm=` prime meridian (degrees added as radians).

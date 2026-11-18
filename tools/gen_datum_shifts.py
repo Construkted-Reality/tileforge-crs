@@ -17,9 +17,18 @@ Two classes of definition are treated differently:
   metres from WGS 84. The CRS gets the shift, or goes on the refusal list.
 - GRS80 or WGS 84 ellipsoid: most such datums (NAD83, ETRS89, GDA94 and so
   on) are within about 2 m of WGS 84, which is the accuracy that EPSG gives
-  the WGS 84 datum ensemble itself. The CRS gets a shift only when the shift
-  moves the position by more than `MIN_SHIFT_M`. It is never refused for lack
-  of one.
+  the WGS 84 datum ensemble itself. The CRS gets a shift only when the first
+  operation in the PROJ ranking is a static Helmert transformation that moves
+  the horizontal position by more than `MIN_SHIFT_M`. Where PROJ ranks an
+  operation of another shape first, the definition stays as it is: for the
+  SIRGAS-Chile realisations that operation has no datum step, and the
+  unshifted position is the correct one. A definition of this class is never
+  refused.
+
+Known limit: EPSG:6988 to 6991 (IG05/12 Intermediate CRS and Israeli Grid
+05/12, on GRS80) are 78 m from WGS 84. PROJ states their operation as an
+inverse Helmert step, which a proj4 `+towgs84` clause cannot express exactly,
+so they get no shift.
 
 A definition on a sphere has no geodetic datum (EPSG calls it "not
 specified"). PROJ treats its latitude and longitude as WGS 84 values, and so
@@ -123,13 +132,21 @@ def shift_class(proj4):
 
 
 def helmert_displacement(params, ecef):
-    """Length in metres of the Helmert shift `params` at the position `ecef`."""
+    """Horizontal length in metres of the Helmert shift `params` at `ecef`.
+
+    The crate applies the shift to the horizontal position only, so the part
+    of the shift vector along the ellipsoid normal does not count.
+    """
     tx, ty, tz, rx, ry, rz, ds = params
     rx, ry, rz, scale = rx * ARCSEC, ry * ARCSEC, rz * ARCSEC, ds * 1.0e-6
     x, y, z = ecef
-    return math.hypot(tx + scale * x - rz * y + ry * z,
-                      ty + rz * x + scale * y - rx * z,
-                      tz - ry * x + rx * y + scale * z)
+    shift = (tx + scale * x - rz * y + ry * z,
+             ty + rz * x + scale * y - rx * z,
+             tz - ry * x + rx * y + scale * z)
+    normal = (x, y, z / (1.0 - WGS84_ES))
+    length = math.hypot(*normal)
+    along = sum(s * n for s, n in zip(shift, normal)) / length
+    return math.sqrt(max(sum(s * s for s in shift) - along * along, 0.0))
 
 
 def split_steps(definition):
@@ -265,9 +282,11 @@ def select_operation(code):
     # of a compound CRS is the shift of its horizontal component.
     horizontal = crs.sub_crs_list[0] if crs.is_compound else crs
     group = TransformerGroup(horizontal, CRS.from_epsg(4978), always_xy=True, area_of_interest=aoi)
+    rank = 0
     for transformer in group.transformers:
         if "Ballpark" in transformer.description:
             continue
+        rank += 1
         params = helmert_parameters(transformer.definition)
         if params is None:
             continue
@@ -294,7 +313,8 @@ def select_operation(code):
         accuracy = transformer.accuracy if transformer.accuracy >= 0 else None
         shift_m = max(helmert_displacement(params, ecef) for _, ecef in samples)
         return None, {"params": params, "name": ident[0], "op": ident[1],
-                      "accuracy": accuracy, "samples": samples, "shift_m": shift_m}
+                      "accuracy": accuracy, "samples": samples, "shift_m": shift_m,
+                      "first_ranked": rank == 1}
     return "PROJ has no static Helmert transformation to WGS 84 for the area of use", None
 
 
@@ -333,9 +353,12 @@ def main():
     small = 0
     largest_small = 0.0
     for code, (reason, record) in zip(affected, selected):
-        if classes[code] == "wgs84" and (record is None or record["shift_m"] <= MIN_SHIFT_M):
+        if classes[code] == "wgs84" and (
+                record is None or record["shift_m"] <= MIN_SHIFT_M
+                or not record["first_ranked"] or code in exclusions):
+            # Unchanged: a definition on GRS80 or WGS 84 is never refused.
             small += 1
-            if record is not None:
+            if record is not None and record["first_ranked"]:
                 largest_small = max(largest_small, record["shift_m"])
             continue
         if record is not None and code in exclusions:
@@ -413,8 +436,8 @@ def main():
     foreign = sum(1 for c in affected if classes[c] == "foreign")
     print(f"definitions without a datum: {len(affected)} "
           f"({foreign} on a foreign ellipsoid, {len(affected) - foreign} on GRS80 or WGS 84)")
-    print(f"  GRS80 or WGS 84 with no shift above {MIN_SHIFT_M} m (unchanged): {small}; "
-          f"largest such shift {largest_small:.2f} m")
+    print(f"  GRS80 or WGS 84, unchanged (no first-ranked Helmert shift above "
+          f"{MIN_SHIFT_M} m): {small}; largest first-ranked shift left out {largest_small:.2f} m")
     print(f"  with a Helmert shift: {len(crs_operation)} ({len(keys)} distinct operations)")
     print(f"  refused: {len(refused)}")
     for reason, count in sorted(reasons.items()):

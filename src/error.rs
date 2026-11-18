@@ -49,6 +49,7 @@ pub enum CrsError {
          derived; reproject the data to a WGS 84 based CRS before conversion"
     )]
     DatumShiftUnavailable(u16),
+
     /// A source coordinate lies more than 20 degrees outside the EPSG area
     /// of use of its CRS (`Reprojector::check_area_of_use`). The usual causes
     /// are a wrong CRS or a wrong coordinate unit. Carries a message that
