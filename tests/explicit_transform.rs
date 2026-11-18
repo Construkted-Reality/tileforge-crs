@@ -45,8 +45,9 @@ fn zero_towgs84_is_accepted_for_a_datum_that_needs_no_shift() {
         assert!(!extraction.vertical_stripped);
         assert_eq!(parse_crs_string(&wkt).unwrap().epsg, 2992, "{zero}");
     }
-    // Codes that name their datum (NAD83, WGS 84) and Web Mercator.
-    for epsg in [4269_u16, 26917, 4326, 32617, 3857] {
+    // Codes that name their datum (NAD83, WGS 84), ETRS89 on GRS80, and
+    // Web Mercator (null grid).
+    for epsg in [4269_u16, 26917, 4326, 32617, 25832, 3857] {
         let wkt = projcs_with_towgs84("TOWGS84[0,0,0,0,0,0,0]", epsg);
         assert_eq!(extract_epsg_from_wkt(&wkt).unwrap().epsg, epsg);
     }
@@ -85,15 +86,19 @@ fn non_zero_or_malformed_towgs84_stays_rejected() {
 }
 
 #[test]
-fn zero_towgs84_is_rejected_for_a_datum_that_is_offset_from_wgs84() {
+fn zero_towgs84_is_rejected_for_a_code_that_is_not_on_grs80_or_wgs84() {
     // EPSG:27700 (OSGB36, Airy) and EPSG:2327 (Xian 1980, IAG 1975) are on
-    // datums that are offset from WGS 84, EPSG:26717 is NAD27 (grid based),
-    // and EPSG:60000 is not in the catalogue. A zero TOWGS84 contradicts
-    // each of them or cannot be checked.
-    for epsg in [27700_u16, 2327, 26717, 60000] {
+    // other ellipsoids, EPSG:26717 is NAD27 (grid based), EPSG:2163 is on a
+    // sphere, and EPSG:60000 is not in the catalogue. A zero TOWGS84 on
+    // these codes cannot be confirmed.
+    for epsg in [27700_u16, 2327, 26717, 2163, 60000] {
         let wkt = projcs_with_towgs84("TOWGS84[0,0,0,0,0,0,0]", epsg);
         let message = extract_epsg_from_wkt(&wkt).unwrap_err().to_string();
         assert!(message.contains("TOWGS84"), "EPSG:{epsg}: {message}");
+        assert!(
+            message.contains("GRS80 or WGS 84"),
+            "EPSG:{epsg}: {message}"
+        );
         assert!(
             message.contains(&format!("EPSG:{epsg}")),
             "EPSG:{epsg}: {message}"
@@ -378,4 +383,16 @@ fn bound_vertical_block_after_the_root_block_is_not_exempt() {
             "{wkt}: {err}"
         );
     }
+}
+
+#[test]
+fn zero_towgs84_inside_a_bound_vertical_leg_is_not_checked() {
+    // The vertical leg is discarded unread, so a clause inside it does not
+    // take part in the zero-shift rule of the horizontal code.
+    let wkt = "COMPOUNDCRS[\"c\",PROJCRS[\"p\",ID[\"EPSG\",27700]],\
+               BOUNDCRS[SOURCECRS[VERTCRS[\"v\"]],TARGETCRS[GEOGCRS[\"g\"]],\
+               TOWGS84[0,0,0,0,0,0,0]]]";
+    let extraction = extract_epsg_from_wkt(wkt).unwrap();
+    assert_eq!(extraction.epsg, 27700);
+    assert!(extraction.vertical_stripped);
 }

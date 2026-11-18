@@ -35,15 +35,15 @@ revision, not by version, so a version bump here does not by itself break them.
 
 ### Changed
 - **Decision reversal: a zero-valued WKT `TOWGS84` is accepted** when the
-  stamped EPSG code is a CRS that the crate places on WGS 84 without a datum
-  shift (WGS 84, NAD83, ETRS89, GDA94 and other GRS80 or WGS 84 based CRSs).
-  The clause then states what the crate does, so no information is lost.
-  GDAL 2 and tools built on it wrote `TOWGS84[0,0,0,0,0,0,0]` for these
-  systems. The 2026-09-07 decision
-  (`docs/reviews/2026-09-07-explicit-transforms.md`) refused it. A zero
-  `TOWGS84` on a CRS on any other ellipsoid (OSGB36, Amersfoort and so on), on
-  a NAD27 CRS or on a code outside the catalogue is an error, because the WKT
-  and its code disagree. A `TOWGS84` with a non-zero value stays refused.
+  stamped EPSG code is a CRS on the GRS80 or WGS 84 ellipsoid in the catalogue
+  (WGS 84, NAD83, ETRS89, GDA94 and similar). The crate applies no datum shift
+  to such a CRS, so the clause changes nothing in the output. GDAL 2 and
+  tools built on it wrote `TOWGS84[0,0,0,0,0,0,0]` for these systems. The
+  2026-09-07 decision (`docs/reviews/2026-09-07-explicit-transforms.md`)
+  refused it. A zero `TOWGS84` on a CRS on any other ellipsoid or on a sphere,
+  on a NAD27 CRS or on a code outside the catalogue is an error, because a
+  zero shift cannot be confirmed for it. A `TOWGS84` with a non-zero value
+  stays refused.
 - `crs-definitions` 0.4 is now a direct dependency (it was already a
   dependency of `proj4rs`; the version and features are the same).
 - The WKT scanner rejects a `[` outside a quoted string that does not open the

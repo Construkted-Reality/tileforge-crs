@@ -27,9 +27,9 @@
 //! BOUNDCRS and TOWGS84 operations are rejected because an EPSG code alone
 //! cannot preserve their explicit transformation. Two cases are accepted. A
 //! `TOWGS84` whose three or seven values are all zero is accepted when the
-//! stamped EPSG code is a CRS that this crate places on WGS 84 without a
-//! datum shift (NAD83, ETRS89, WGS 84 and similar): the clause then states
-//! what the crate does. The other case is a
+//! stamped EPSG code is a CRS on the GRS80 or WGS 84 ellipsoid (NAD83,
+//! ETRS89, WGS 84 and similar): the crate applies no datum shift to such a
+//! CRS, so the clause changes nothing. The other case is a
 //! BOUNDCRS whose SOURCECRS is a vertical CRS (`VERTCRS`, `VERTICALCRS` or
 //! `VERT_CS`), as PROJ writes the geoid model of a compound CRS. Its
 //! operation applies to heights only and is discarded with the vertical
@@ -37,7 +37,7 @@
 //! the root is an error, because the root must be a horizontal or compound
 //! CRS.
 
-use crate::catalogue::has_zero_shift_to_wgs84;
+use crate::catalogue::accepts_zero_towgs84;
 use crate::error::CrsError;
 
 /// Result of a successful WKT scan.
@@ -80,13 +80,14 @@ pub(crate) const BYTE_ORDER_MARK: char = '\u{feff}';
 pub(crate) fn extract_epsg(wkt: &str) -> Result<WktExtraction, CrsError> {
     let zero_towgs84 = reject_explicit_transforms(wkt)?;
     let extraction = extract_scanned_epsg(wkt)?;
-    // A zero TOWGS84 is redundant only when the stamped code gets no datum
-    // shift from this crate. For any other code the two disagree.
-    if zero_towgs84 && !has_zero_shift_to_wgs84(extraction.epsg) {
+    // A zero TOWGS84 is accepted only for a code on GRS80 or WGS 84, where
+    // the crate applies no datum shift. For any other code it cannot be
+    // confirmed.
+    if zero_towgs84 && !accepts_zero_towgs84(extraction.epsg) {
         return Err(CrsError::parse(format!(
-            "TOWGS84 declares a zero datum shift, but EPSG:{} is not a CRS that this crate \
-             places on WGS 84 without a shift (its datum is offset from WGS 84, or the code \
-             is not in the catalogue); the WKT and its code disagree",
+            "TOWGS84 declares a zero datum shift, but EPSG:{} is not a CRS on the GRS80 or \
+             WGS 84 ellipsoid in the catalogue; a zero shift is accepted only for such a \
+             CRS, so this WKT is refused",
             extraction.epsg
         )));
     }
@@ -182,7 +183,10 @@ const VERTICAL_KEYWORDS: &[&str] = &["VERT_CS", "VERTCRS", "VERTICALCRS"];
 ///
 /// - the identifiers `BOUNDCRS` and `TOWGS84` (ASCII case-insensitive),
 ///   whatever character follows them, because an EPSG code alone cannot
-///   carry their explicit transformation;
+///   carry their explicit transformation. A `TOWGS84[...]` block of three
+///   or seven zero values is not rejected here: the function returns
+///   `Ok(true)` when it met one, and the caller checks it against the
+///   EPSG code;
 /// - a `(` or `)` delimiter, because the block scanner understands square
 ///   brackets only;
 /// - a `[` that does not open the block of an identifier (the identifier

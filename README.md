@@ -20,8 +20,8 @@ A release here changes nothing downstream until a consumer moves its pin.
   (a geoid model, as PROJ writes it). The parser discards it with the vertical
   component and sets `vertical_stripped`, so the caller's vertical-datum warning
   applies. One `TOWGS84` is accepted: a clause whose values are all zero, when the
-  stamped EPSG code is a CRS that gets no datum shift (WGS 84, NAD83, ETRS89 and
-  similar). A zero `TOWGS84` on any other code is an error.
+  stamped EPSG code is a CRS on the GRS80 or WGS 84 ellipsoid (WGS 84, NAD83, ETRS89
+  and similar). A zero `TOWGS84` on any other code is an error.
 - The WKT scanner supports square-bracket delimiters only. A `(` or `)` outside a quoted
   string is an error, and so is a `[` that does not follow a keyword or a `]` that
   closes no block.

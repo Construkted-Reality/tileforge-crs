@@ -1,17 +1,21 @@
 // ABOUTME: Answers questions about the proj4 catalogue definition of an EPSG code.
-// ABOUTME: Tells whether a CRS is placed on WGS 84 without a datum shift.
+// ABOUTME: Tells whether a zero-valued WKT TOWGS84 clause is acceptable for a code.
 //! Facts about catalogue definitions that the parser needs.
 
-/// `true` when the crate places the CRS `epsg` on WGS 84 without a datum
-/// shift, so that a zero-valued WKT `TOWGS84` clause states what the crate
-/// does.
+/// `true` when a zero-valued WKT `TOWGS84` clause is accepted for the CRS
+/// `epsg`: the catalogue definition names the WGS 84 or NAD83 datum, carries
+/// a zero `+towgs84` or the null grid, or names only the GRS80 or WGS 84
+/// ellipsoid.
 ///
-/// That holds for a definition that names the WGS 84 or NAD83 datum, that
-/// carries a zero `+towgs84` or the null grid, or that names only a GRS80 or
-/// WGS 84 ellipsoid or a sphere. It does not hold for a definition on any
-/// other ellipsoid (its datum is offset from WGS 84), for a grid-based datum
-/// such as NAD27, or for a code that is not in the catalogue.
-pub(crate) fn has_zero_shift_to_wgs84(epsg: u16) -> bool {
+/// For these definitions `Reprojector` applies no datum shift, so the clause
+/// changes nothing in the output. A few datums in this set are in fact
+/// offset from WGS 84 (GGRS87, VN-2000, Israel 1993); the crate does not
+/// shift them either, with or without the clause.
+///
+/// `false` for a definition on any other ellipsoid or on a sphere, for a
+/// grid-based datum such as NAD27, and for a code that is not in the
+/// catalogue. A zero shift cannot be confirmed for those.
+pub(crate) fn accepts_zero_towgs84(epsg: u16) -> bool {
     let Some(definition) = crs_definitions::from_code(epsg) else {
         return false;
     };
@@ -33,14 +37,14 @@ pub(crate) fn has_zero_shift_to_wgs84(epsg: u16) -> bool {
     if let Some(datum) = value("datum") {
         return matches!(datum, "WGS84" | "NAD83");
     }
-    // No datum: only the ellipsoid tells.
+    // No datum: only the ellipsoid tells. A sphere (`+R=`, or equal axes)
+    // is not GRS80 or WGS 84.
     if value("R").is_some() {
-        return true;
+        return false;
     }
     match value("ellps") {
-        Some(name) => matches!(name, "GRS80" | "WGS84" | "sphere"),
+        Some(name) => matches!(name, "GRS80" | "WGS84"),
         None => match (number("a"), number("rf"), number("b")) {
-            (Some(a), _, Some(b)) if a == b => true,
             (Some(a), Some(rf), _) => {
                 let f = 1.0 / rf;
                 is_wgs84_ellipsoid(a, f * (2.0 - f))
@@ -63,16 +67,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zero_shift_holds_only_for_crs_placed_on_wgs84_as_they_are() {
-        // WGS 84, NAD83 by name, GRS80 without a datum, Web Mercator, and a
-        // sphere (EPSG:2163).
-        for epsg in [4326_u16, 32617, 4269, 26917, 2992, 25832, 3857, 2163] {
-            assert!(has_zero_shift_to_wgs84(epsg), "EPSG:{epsg}");
+    fn zero_towgs84_is_accepted_only_on_grs80_or_wgs84() {
+        // WGS 84 and NAD83 by name, GRS80 without a datum, Web Mercator
+        // (null grid).
+        for epsg in [4326_u16, 32617, 4269, 26917, 2992, 25832, 3857] {
+            assert!(accepts_zero_towgs84(epsg), "EPSG:{epsg}");
         }
-        // Airy (OSGB36), IAG 1975 (Xian 1980), NAD27 grids, Bessel, not in
-        // the catalogue.
-        for epsg in [27700_u16, 2327, 26717, 28992, 60000, 0] {
-            assert!(!has_zero_shift_to_wgs84(epsg), "EPSG:{epsg}");
+        // Airy (OSGB36), IAG 1975 (Xian 1980), NAD27 grids, Bessel, spheres
+        // (EPSG:2163, 3408, 4047), not in the catalogue.
+        for epsg in [27700_u16, 2327, 26717, 28992, 2163, 3408, 4047, 60000, 0] {
+            assert!(!accepts_zero_towgs84(epsg), "EPSG:{epsg}");
         }
     }
 }
