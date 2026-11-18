@@ -23,6 +23,15 @@ revision, not by version, so a version bump here does not by itself break them.
   `is_supported_epsg` returns `false` for these codes.
 - `tools/gen_datum_shifts.py` generates `src/datum_shift_table.rs` and the
   PROJ reference fixture `tests/fixtures/datum-shift-reference.txt`.
+- A compound CRS whose vertical leg is a `BOUNDCRS` on a vertical CRS (`VERTCRS`,
+  `VERTICALCRS` or `VERT_CS` as the first child of `SOURCECRS`) parses. PROJ-based
+  tools write a geoid model this way. The result is the horizontal EPSG code with
+  `vertical_stripped = true`, as for a plain vertical leg; the operation of that
+  leg is not read. A `BOUNDCRS` on a horizontal CRS, a `BOUNDCRS` without one
+  readable `SOURCECRS`, and `TOWGS84` outside that leg are still errors. So is a
+  vertical `BOUNDCRS` that is nested inside a horizontal CRS: only a direct child
+  of the compound root is a vertical leg. A vertical `BOUNDCRS` at the root is an
+  error with its own message.
 - `Reprojector::check_area_of_use` compares one source coordinate (the dataset
   centre) with the EPSG area of use of the source CRS. It returns
   `AreaOfUseCheck::Inside` within 1 degree of the area, `AreaOfUseCheck::Outside`
@@ -39,6 +48,12 @@ revision, not by version, so a version bump here does not by itself break them.
 ### Changed
 - `crs-definitions` 0.4 is now a direct dependency (it was already a
   dependency of `proj4rs`; the version and features are the same).
+- The WKT scanner rejects a `[` outside a quoted string that does not open the
+  block of an identifier (the identifier and optional ASCII whitespace come
+  directly before it), and a `]` that closes no block. Before, the scanner read
+  the nested clauses of such a bracket as top-level clauses, so text such as a
+  vertical tab or a no-break space before `[` could change the EPSG code. Text
+  with an extra `]` after the root block also fails now.
 - `detect_crs_from_sidecar` refuses a `.prj`/`.qpj` sidecar larger than 1 MiB
   (1,048,576 bytes) with `CrsError::Io`. The read stops one byte past the limit,
   so a large file no longer takes memory equal to its size.
@@ -85,6 +100,11 @@ revision, not by version, so a version bump here does not by itself break them.
   catalogue definition: the `+k_0=` scale factor (ignored), an ellipsoid
   given by its minor axis (wrong flattening in the Transverse Mercator
   series), and a `+pm=` prime meridian (degrees added as radians).
+- `parse_crs_string`, `detect_crs_from_sidecar` and `extract_epsg_from_wkt` ignore
+  one leading UTF-8 byte order mark (U+FEFF), and `parse_crs_string` also ignores
+  the whitespace after it. Before, a `.prj` saved by Windows Notepad failed with
+  "CRS WKT is empty or has no leading identifier". A byte order mark at any other
+  position is not special.
 - Error messages repeat at most 64 characters of caller input and mark a cut with
   `...`. Before, an input token was repeated in full.
 - A body that starts with `EPSG:` but carries an invalid code (`EPSG:65536`,
