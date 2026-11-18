@@ -2,10 +2,12 @@
 //! clause from a CRS WKT string.
 //!
 //! Not a full WKT parser. The strategy is bracket-balanced substring
-//! scanning, which is sufficient for the Phase 1.1 deliverable: pull the
-//! EPSG code out of a real-world LAS-1.4 WKT VLR (which always carries
-//! an `AUTHORITY["EPSG","NNNN"]` clause when produced by PDAL, lastools,
-//! QGIS, or GDAL).
+//! scanning, which is enough to pull the EPSG code out of a CRS WKT from
+//! any source (a LAS 1.4 WKT record, a `.prj`/`.qpj` sidecar, E57
+//! metadata). PDAL, lastools, QGIS and GDAL write an
+//! `AUTHORITY["EPSG","NNNN"]` clause; ESRI-style `.prj` files usually do
+//! not, and such a WKT fails because this scanner resolves a CRS by its
+//! EPSG code only. Square brackets are the only supported delimiters.
 //!
 //! Supported root blocks — both **WKT1** and **WKT2** (LAS 1.4 producers
 //! increasingly emit WKT2):
@@ -38,19 +40,19 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
     let bytes = wkt.as_bytes();
     let after_ws = skip_whitespace(bytes, 0);
     let (id, after_id) = read_identifier(bytes, after_ws).ok_or_else(|| {
-        CrsError::parse("WKT VLR is empty or has no leading identifier".to_string())
+        CrsError::parse("CRS WKT is empty or has no leading identifier".to_string())
     })?;
     let id_upper = id.to_ascii_uppercase();
     let id_shown = echo_fragment(id);
     let after_open = skip_whitespace(bytes, after_id);
     if after_open >= bytes.len() || bytes[after_open] != b'[' {
         return Err(CrsError::parse(format!(
-            "WKT VLR identifier '{id_shown}' is not followed by '['"
+            "CRS WKT identifier '{id_shown}' is not followed by '['"
         )));
     }
     let close_idx = find_matching_bracket(bytes, after_open).ok_or_else(|| {
         CrsError::parse(format!(
-            "WKT VLR identifier '{id_shown}' has unbalanced brackets"
+            "CRS WKT identifier '{id_shown}' has unbalanced brackets"
         ))
     })?;
     let body = &wkt[after_open + 1..close_idx];
@@ -93,7 +95,7 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
             })
         }
         _ => Err(CrsError::parse(format!(
-            "WKT VLR root is unexpected '{id_shown}' (want a WKT1 PROJCS/GEOGCS/GEOCCS/COMPD_CS \
+            "CRS WKT root is unexpected '{id_shown}' (want a WKT1 PROJCS/GEOGCS/GEOCCS/COMPD_CS \
              or WKT2 PROJCRS/GEOGCRS/GEODCRS/COMPOUNDCRS)"
         ))),
     }
@@ -350,11 +352,13 @@ fn parse_epsg_authority_in_body(body: &str) -> Result<u16, CrsError> {
     match (epsg, other_authority) {
         (Some(code), _) => Ok(code),
         (None, Some(authority)) => Err(CrsError::parse(format!(
-            "WKT VLR uses non-EPSG authority '{}'; only EPSG is supported",
+            "CRS WKT uses non-EPSG authority '{}'; only EPSG is supported",
             echo_fragment(authority)
         ))),
         (None, None) => Err(CrsError::parse(
-            "WKT VLR has no EPSG AUTHORITY/ID clause; pre-process with `pdal translate` to inject one"
+            "CRS WKT has no EPSG AUTHORITY/ID clause (ESRI-style .prj files omit it); \
+             this parser resolves a CRS by its EPSG code only, so the EPSG code must be \
+             supplied separately"
                 .to_string(),
         )),
     }
@@ -663,6 +667,35 @@ mod tests {
             let msg = extract_epsg_from_wkt(wkt).unwrap_err().to_string();
             assert!(msg.contains("more than one horizontal"), "msg: {msg}");
         }
+    }
+
+    /// The scanner reads LAS records, sidecar files and E57 metadata, so its
+    /// messages name neither a container format nor a conversion tool.
+    #[test]
+    fn error_messages_are_context_neutral() {
+        for wkt in [
+            "",
+            "PROJCS",
+            "PROJCS[",
+            r#"VERT_CS["v",AUTHORITY["EPSG","5773"]]"#,
+            r#"PROJCS["x",UNIT["m",1]]"#,
+            r#"PROJCS["x",AUTHORITY["ESRI","102100"]]"#,
+        ] {
+            let msg = extract_epsg_from_wkt(wkt).unwrap_err().to_string();
+            assert!(msg.contains("CRS WKT"), "{wkt:?}: {msg}");
+            assert!(!msg.contains("VLR"), "{wkt:?}: {msg}");
+            assert!(!msg.contains("pdal"), "{wkt:?}: {msg}");
+        }
+    }
+
+    #[test]
+    fn missing_identifier_message_explains_the_esri_case() {
+        let msg = extract_epsg_from_wkt(r#"PROJCS["x",UNIT["m",1]]"#)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("no EPSG AUTHORITY/ID clause"), "msg: {msg}");
+        assert!(msg.contains("ESRI-style .prj"), "msg: {msg}");
+        assert!(msg.contains("EPSG code only"), "msg: {msg}");
     }
 
     /// Every error that echoes caller input stays short and still shows the

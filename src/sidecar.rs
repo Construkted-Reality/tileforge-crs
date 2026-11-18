@@ -7,13 +7,14 @@
 //! ESRI/Windows tooling). Two body formats are accepted:
 //!
 //! - **OGC WKT** — full `PROJCS[...]` / `GEOGCS[...]` / `GEOCCS[...]`
-//!   / `COMPD_CS[...]` string, same format as a LAS-1.4 WKT VLR.
+//!   / `COMPD_CS[...]` string or its WKT2 equivalent.
 //!   Reuses [`extract_epsg_from_wkt`].
 //! - **Short-form `EPSG:NNNNN`** — single-line content produced by
 //!   `gdalsrsinfo -o proj` and many lidar-export pipelines.
 //!
-//! Short-form is tried first (cheap) so a malformed WKT body still
-//! surfaces the WKT-specific error.
+//! Short-form is tried first (cheap). A body that starts with `EPSG:`
+//! but carries an invalid code gets a short-form error; any other body
+//! that fails surfaces the WKT-specific error.
 //!
 //! Returns:
 //! - `Ok(Some(epsg))` — sidecar found and parsed.
@@ -28,7 +29,7 @@ use std::path::Path;
 
 use crate::error::CrsError;
 use crate::reproject::is_geotiff_sentinel;
-use crate::wkt::extract_epsg_from_wkt;
+use crate::wkt::{echo_fragment, extract_epsg_from_wkt};
 
 /// Filename suffixes tried in order. `.prj` is the GIS canonical (ESRI,
 /// GDAL, PDAL, lastools); `.qpj` is QGIS's WKT-2 variant. Both carry the
@@ -190,7 +191,8 @@ fn read_sidecar_bounded(path: &Path) -> Result<String, CrsError> {
 /// value to [`Reprojector::new`](crate::Reprojector::new) / the proj4
 /// catalogue.
 pub fn parse_crs_string(body: &str) -> Result<ParsedCrs, CrsError> {
-    if let Some(epsg) = parse_short_form_epsg(body) {
+    if let Some(short_form) = parse_short_form_epsg(body) {
+        let epsg = short_form?;
         if is_geotiff_sentinel(epsg) {
             return Err(CrsError::sentinel_code(epsg));
         }
@@ -207,9 +209,9 @@ pub fn parse_crs_string(body: &str) -> Result<ParsedCrs, CrsError> {
         Ok(p) if is_geotiff_sentinel(p.epsg) => Err(CrsError::sentinel_code(p.epsg)),
         Ok(p) => Ok(p),
         Err(e) => Err(CrsError::parse(format!(
-            "expected `EPSG:NNNNN` short form or OGC WKT \
-             `PROJCS[...]` / `GEOGCS[...]` / `GEOCCS[...]` / \
-             `COMPD_CS[...]`; WKT parse error: {e}"
+            "expected `EPSG:NNNNN` short form or OGC WKT1 \
+             `PROJCS`/`GEOGCS`/`GEOCCS`/`COMPD_CS` or WKT2 \
+             `PROJCRS`/`GEOGCRS`/`GEODCRS`/`COMPOUNDCRS`; WKT parse error: {e}"
         ))),
     }
 }
@@ -224,14 +226,22 @@ pub fn parse_crs_string_epsg(body: &str) -> Result<u16, CrsError> {
 /// Parse the GDAL-canonical short form `EPSG:NNNNN`. Case-insensitive
 /// on the `EPSG` prefix; tolerates whitespace around the colon and a
 /// trailing newline (already trimmed by the caller, but a stray
-/// internal space is fine). Returns `None` if the body doesn't match
-/// the short form — caller falls through to WKT.
-fn parse_short_form_epsg(body: &str) -> Option<u16> {
+/// internal space is fine). Returns `None` if the body does not start
+/// with `EPSG:` (the caller falls through to WKT), and `Some(Err(_))` if
+/// it does but the code is not a `u16`.
+fn parse_short_form_epsg(body: &str) -> Option<Result<u16, CrsError>> {
     let (prefix, rest) = body.split_once(':')?;
     if !prefix.trim().eq_ignore_ascii_case("EPSG") {
         return None;
     }
-    rest.trim().parse::<u16>().ok()
+    let code_text = rest.trim();
+    Some(code_text.parse::<u16>().map_err(|_| {
+        CrsError::parse(format!(
+            "`EPSG:NNNNN` short form has an invalid code {:?}; the code must be an \
+             integer from 0 to 65535",
+            echo_fragment(code_text)
+        ))
+    }))
 }
 
 #[cfg(test)]
@@ -423,6 +433,49 @@ mod tests {
         std::fs::write(&prj, "AUTO:42001").unwrap();
         let err = detect_crs_from_sidecar(&ply).unwrap_err();
         assert!(err.to_string().contains("WKT"), "got: {err}");
+    }
+
+    #[test]
+    fn short_form_with_invalid_code_reports_the_short_form() {
+        for (body, shown) in [
+            ("EPSG:65536", "\"65536\""),
+            ("EPSG:", "\"\""),
+            ("EPSG:-1", "\"-1\""),
+            ("EPSG:32617 extra", "\"32617 extra\""),
+            ("epsg : abc", "\"abc\""),
+        ] {
+            let err = parse_crs_string(body).unwrap_err();
+            let CrsError::Parse(msg) = &err else {
+                panic!("want Parse got {err:?}");
+            };
+            assert!(
+                msg.contains("short form has an invalid code"),
+                "{body}: {msg}"
+            );
+            assert!(msg.contains(shown), "{body}: {msg}");
+            assert!(!msg.contains("not followed by"), "{body}: {msg}");
+        }
+    }
+
+    #[test]
+    fn short_form_invalid_code_text_is_truncated() {
+        let body = format!("EPSG:{}", "9".repeat(10_000));
+        let msg = parse_crs_string(&body).unwrap_err().to_string();
+        assert!(msg.len() < 400, "len {}", msg.len());
+    }
+
+    #[test]
+    fn short_form_sign_and_leading_zero_still_parse() {
+        assert_eq!(parse_crs_string("EPSG:+32617").unwrap().epsg, 32617);
+        assert_eq!(parse_crs_string("EPSG:032617").unwrap().epsg, 32617);
+    }
+
+    #[test]
+    fn combined_error_names_wkt1_and_wkt2_roots() {
+        let msg = parse_crs_string("this is not WKT").unwrap_err().to_string();
+        for root in ["PROJCS", "COMPD_CS", "PROJCRS", "COMPOUNDCRS", "EPSG:NNNNN"] {
+            assert!(msg.contains(root), "missing {root}: {msg}");
+        }
     }
 
     #[test]
