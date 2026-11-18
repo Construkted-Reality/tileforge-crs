@@ -108,6 +108,25 @@ fn zero_towgs84_is_rejected_for_a_code_that_is_not_on_grs80_or_wgs84() {
 }
 
 #[test]
+fn zero_towgs84_refusal_is_true_for_a_grs80_code_with_a_table_shift() {
+    // EPSG:2100 (GGRS87), EPSG:2039 (Israel 1993) and EPSG:3405 (VN-2000)
+    // are on GRS80 or WGS 84, and the datum shift table gives them a Helmert
+    // shift. The refusal must not say that they are on another ellipsoid.
+    for epsg in [2100_u16, 2039, 3405] {
+        let wkt = projcs_with_towgs84("TOWGS84[0,0,0,0,0,0,0]", epsg);
+        let message = extract_epsg_from_wkt(&wkt).unwrap_err().to_string();
+        assert!(
+            message.contains("GRS80 or WGS 84 ellipsoid without a datum shift"),
+            "EPSG:{epsg}: {message}"
+        );
+        assert!(
+            message.contains(&format!("EPSG:{epsg}")),
+            "EPSG:{epsg}: {message}"
+        );
+    }
+}
+
+#[test]
 fn quoted_operation_names_are_not_operations() {
     let wkt = r#"GEOGCS["BOUNDCRS and ""TOWGS84[1,2,3]""",AUTHORITY["EPSG","4326"]]"#;
     assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 4326);

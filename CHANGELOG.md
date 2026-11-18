@@ -20,7 +20,9 @@ revision, not by version, so a version bump here does not by itself break them.
   static one (for example Xian 1980 and New Beijing), or `proj4rs` cannot
   reproduce the PROJ position (`tools/datum-shift-exclusions.txt`). This
   refuses 529 catalogue CRSs that `Reprojector::new` accepted before.
-  `is_supported_epsg` returns `false` for these codes.
+  `is_supported_epsg` returns `false` for these codes. The new variant breaks
+  an exhaustive `match` on `CrsError`; a consumer that maps the error through
+  `to_string` or a non-exhaustive `matches!` is unaffected.
 - `tools/gen_datum_shifts.py` generates `src/datum_shift_table.rs` and the
   PROJ reference fixture `tests/fixtures/datum-shift-reference.txt`.
 - A compound CRS whose vertical leg is a `BOUNDCRS` on a vertical CRS (`VERTCRS`,

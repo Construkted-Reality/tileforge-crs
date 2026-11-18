@@ -42,9 +42,10 @@ A release here changes nothing downstream until a consumer moves its pin.
 - Vertical-datum policy belongs to the consumer. The parser only reports `vertical_stripped`.
 - A source CRS whose datum is offset from WGS 84 gets a Helmert datum shift: every CRS on
   an ellipsoid other than GRS80 or WGS 84 (OSGB36, Amersfoort, CH1903, DHDN, MGI, ED50
-  and so on), and the few GRS80 or WGS 84 based datums that are more than 5 m from
-  WGS 84 (GGRS87, VN-2000, Israel 1993). `Reprojector::datum_shift` reports the operation
-  and its published accuracy, typically 1 m to 10 m. A consumer should pass that on as a
+  and so on), and the few GRS80 or WGS 84 based datums whose first-ranked Helmert shift
+  moves the horizontal position by more than 5 m (GGRS87, VN-2000, Israel 1993).
+  `Reprojector::datum_shift` reports the operation and its published accuracy, typically
+  1 m to 10 m. A consumer should pass that on as a
   warning. The shift moves the horizontal position only. Height passes through as a
   height above the WGS 84 ellipsoid.
 - Other GRS80 or WGS 84 based datums (NAD83, ETRS89, GDA94 and so on) get no shift. They

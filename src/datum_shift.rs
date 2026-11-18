@@ -25,7 +25,8 @@
 //! A CRS on a foreign ellipsoid that has no verified operation is refused:
 //! its position on WGS 84 cannot be derived. A CRS on GRS80 or WGS 84 is in
 //! the table only when the first operation in the PROJ ranking is a Helmert
-//! shift of more than 5 m, and it is never refused.
+//! shift that moves the horizontal position by more than 5 m, and it is
+//! never refused.
 //! A definition on a sphere has no geodetic datum; its coordinates are read
 //! as WGS 84 values, as PROJ does.
 
@@ -161,7 +162,8 @@ fn prime_meridian_deg(pm: &str) -> Option<f64> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum DatumShiftRule {
     /// The catalogue definition is used as it is: it names its own datum, it
-    /// is on a sphere, or it is on GRS80 or WGS 84 with no shift above 5 m.
+    /// is on a sphere, or it is on GRS80 or WGS 84 with no first-ranked
+    /// Helmert shift that moves the horizontal position by more than 5 m.
     NotNeeded,
     /// The definition needs this Helmert shift.
     Helmert(&'static DatumShift),
