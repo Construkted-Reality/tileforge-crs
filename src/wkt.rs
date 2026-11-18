@@ -106,6 +106,13 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
                 vertical_stripped: false,
             })
         }
+        // The transform gate lets a `BOUNDCRS` through only when its source
+        // is a vertical CRS, which carries no horizontal position.
+        "BOUNDCRS" => Err(CrsError::parse(
+            "CRS WKT root is a BOUNDCRS on a vertical CRS, which has no horizontal \
+             position; the root must be a horizontal or compound CRS"
+                .to_string(),
+        )),
         _ => Err(CrsError::parse(format!(
             "CRS WKT root is unexpected '{id_shown}' (want a WKT1 PROJCS/GEOGCS/GEOCCS/COMPD_CS \
              or WKT2 PROJCRS/GEOGCRS/GEODCRS/COMPOUNDCRS)"
@@ -120,6 +127,10 @@ const HORIZONTAL_KEYWORDS: &[&str] = &[
     "PROJCRS", "GEOGCRS", "GEODCRS", // WKT2
 ];
 
+/// Vertical-CRS keywords, WKT1 and WKT2. A `BOUNDCRS` whose source CRS
+/// starts with one of them is the vertical leg of a compound CRS.
+const VERTICAL_KEYWORDS: &[&str] = &["VERT_CS", "VERTCRS", "VERTICALCRS"];
+
 /// Scan every nesting level without recursion and reject two kinds of
 /// input outside quoted strings:
 ///
@@ -129,9 +140,20 @@ const HORIZONTAL_KEYWORDS: &[&str] = &[
 /// - a `(` or `)` delimiter, because the block scanner understands square
 ///   brackets only.
 ///
+/// One exception: a `BOUNDCRS[...]` block whose `SOURCECRS[...]` child
+/// holds a vertical CRS (see [`bound_crs_has_vertical_source`]) is not
+/// scanned for those identifiers. Its operation applies to heights only,
+/// and the scanner discards the vertical component of a compound CRS, so
+/// the operation is discarded with it. The delimiter rule still applies
+/// inside that block.
+///
 /// Quoted names (with `""` escapes) are exempt from both checks.
 fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
     let bytes = wkt.as_bytes();
+    // Bracket depth of the scan position, and the depth at which an
+    // exempt vertical `BOUNDCRS` block opened while the scan is inside it.
+    let mut depth: usize = 0;
+    let mut exempt_from: Option<usize> = None;
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'"' {
@@ -153,12 +175,26 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
                  square-bracket delimiters only",
                 char::from(bytes[i])
             )));
+        } else if bytes[i] == b'[' {
+            depth += 1;
+            i += 1;
+        } else if bytes[i] == b']' {
+            depth = depth.saturating_sub(1);
+            if exempt_from == Some(depth) {
+                exempt_from = None;
+            }
+            i += 1;
         } else if let Some((id, end)) = read_identifier(bytes, i) {
-            if id.eq_ignore_ascii_case("BOUNDCRS") || id.eq_ignore_ascii_case("TOWGS84") {
-                return Err(CrsError::parse(format!(
-                    "{} declares an explicit datum transformation that this EPSG-only parser cannot preserve; reproject the data with that transformation before conversion",
-                    id.to_ascii_uppercase()
-                )));
+            if exempt_from.is_none() {
+                if id.eq_ignore_ascii_case("BOUNDCRS") && bound_crs_has_vertical_source(wkt, end) {
+                    exempt_from = Some(depth);
+                } else if id.eq_ignore_ascii_case("BOUNDCRS") || id.eq_ignore_ascii_case("TOWGS84")
+                {
+                    return Err(CrsError::parse(format!(
+                        "{} declares an explicit datum transformation that this EPSG-only parser cannot preserve; reproject the data with that transformation before conversion",
+                        id.to_ascii_uppercase()
+                    )));
+                }
             }
             i = end;
         } else {
@@ -166,6 +202,38 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
         }
     }
     Ok(())
+}
+
+/// Return `true` when the `BOUNDCRS` identifier that ends at `after_id` is
+/// followed (after optional ASCII whitespace) by a balanced `[...]` block
+/// with exactly one depth-0 `SOURCECRS[...]` child, and the first token of
+/// that child is a vertical-CRS identifier ([`VERTICAL_KEYWORDS`], ASCII
+/// case-insensitive) that opens a block. Any other shape returns `false`.
+fn bound_crs_has_vertical_source(wkt: &str, after_id: usize) -> bool {
+    let bytes = wkt.as_bytes();
+    let open = skip_whitespace(bytes, after_id);
+    if bytes.get(open) != Some(&b'[') {
+        return false;
+    }
+    let Some(close) = find_matching_bracket(bytes, open) else {
+        return false;
+    };
+    let [source] = find_child_blocks(&wkt[open + 1..close], &["SOURCECRS"])[..] else {
+        return false;
+    };
+    let source = source.as_bytes();
+    let Some(source_open) = source.iter().position(|&c| c == b'[') else {
+        return false;
+    };
+    let child_start = skip_whitespace(source, source_open + 1);
+    let Some((child, after_child)) = read_identifier(source, child_start) else {
+        return false;
+    };
+    let child_open = skip_whitespace(source, after_child);
+    source.get(child_open) == Some(&b'[')
+        && VERTICAL_KEYWORDS
+            .iter()
+            .any(|k| child.eq_ignore_ascii_case(k))
 }
 
 /// Longest fragment of caller input, in characters, that an error message
