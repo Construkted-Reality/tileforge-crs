@@ -10,11 +10,95 @@ fn bound_transform_is_not_silently_discarded() {
 
 #[test]
 fn towgs84_is_not_silently_discarded() {
-    for operation in ["TOWGS84[100,200,300]", "towgs84 [0,0,0,0,0,0,0]"] {
+    for operation in ["TOWGS84[100,200,300]", "towgs84 [0,0,0,0,0,0,1]"] {
         let wkt =
             format!("GEOGCS[\"custom\",DATUM[\"datum\",{operation}],AUTHORITY[\"EPSG\",\"4269\"]]");
         let err = extract_epsg_from_wkt(&wkt).unwrap_err();
         assert!(err.to_string().contains("TOWGS84"));
+    }
+}
+
+/// A WKT1 projected CRS as GDAL 2 wrote it, with `datum_shift` as the
+/// `TOWGS84` clause of its datum and `epsg` as its code.
+fn projcs_with_towgs84(datum_shift: &str, epsg: u16) -> String {
+    format!(
+        "PROJCS[\"p\",GEOGCS[\"g\",DATUM[\"d\",SPHEROID[\"GRS 1980\",6378137,298.257222101,\
+         AUTHORITY[\"EPSG\",\"7019\"]],{datum_shift},AUTHORITY[\"EPSG\",\"6152\"]],\
+         PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],\
+         AUTHORITY[\"EPSG\",\"4152\"]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],\
+         UNIT[\"foot\",0.3048],AUTHORITY[\"EPSG\",\"{epsg}\"]]"
+    )
+}
+
+#[test]
+fn zero_towgs84_is_accepted_for_a_datum_that_needs_no_shift() {
+    // EPSG:2992 is NAD83(HARN) / Oregon Lambert (ft), on GRS80. The catalogue
+    // applies no shift to it, which is what a zero TOWGS84 declares.
+    for zero in [
+        "TOWGS84[0,0,0,0,0,0,0]",
+        "TOWGS84[0,0,0]",
+        "towgs84 [ 0.0, 0.000, -0, 0e0, 0, 0, 0 ]",
+    ] {
+        let wkt = projcs_with_towgs84(zero, 2992);
+        let extraction = extract_epsg_from_wkt(&wkt).unwrap_or_else(|e| panic!("{zero}: {e}"));
+        assert_eq!(extraction.epsg, 2992, "{zero}");
+        assert!(!extraction.vertical_stripped);
+        assert_eq!(parse_crs_string(&wkt).unwrap().epsg, 2992, "{zero}");
+    }
+    // Codes that name their datum (NAD83, WGS 84) and Web Mercator.
+    for epsg in [4269_u16, 26917, 4326, 32617, 3857] {
+        let wkt = projcs_with_towgs84("TOWGS84[0,0,0,0,0,0,0]", epsg);
+        assert_eq!(extract_epsg_from_wkt(&wkt).unwrap().epsg, epsg);
+    }
+}
+
+#[test]
+fn zero_towgs84_in_the_horizontal_leg_of_a_compound_is_accepted() {
+    let wkt = format!(
+        "COMPD_CS[\"c\",{},VERT_CS[\"v\",AUTHORITY[\"EPSG\",\"5703\"]]]",
+        projcs_with_towgs84("TOWGS84[0,0,0,0,0,0,0]", 2992)
+    );
+    let extraction = extract_epsg_from_wkt(&wkt).unwrap();
+    assert_eq!(extraction.epsg, 2992);
+    assert!(extraction.vertical_stripped);
+}
+
+#[test]
+fn non_zero_or_malformed_towgs84_stays_rejected() {
+    for operation in [
+        "TOWGS84[0,0,0,0,0,0,0.001]",
+        "TOWGS84[-0.991,1.9072,0.5129,0.0258,0.0097,0.0117,0]",
+        "TOWGS84[0,0]",
+        "TOWGS84[0,0,0,0]",
+        "TOWGS84[]",
+        "TOWGS84[0,0,zero]",
+        "TOWGS84[0,0,0,0,0,0,0,0]",
+        "TOWGS84[0,0,NaN]",
+    ] {
+        let err = extract_epsg_from_wkt(&projcs_with_towgs84(operation, 2992)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("TOWGS84 declares an explicit datum transformation"),
+            "{operation}: {err}"
+        );
+    }
+}
+
+#[test]
+fn zero_towgs84_is_rejected_for_a_datum_that_is_offset_from_wgs84() {
+    // EPSG:27700 (OSGB36, Airy) and EPSG:2327 (Xian 1980, IAG 1975) are on
+    // datums that are offset from WGS 84, EPSG:26717 is NAD27 (grid based),
+    // and EPSG:60000 is not in the catalogue. A zero TOWGS84 contradicts
+    // each of them or cannot be checked.
+    for epsg in [27700_u16, 2327, 26717, 60000] {
+        let wkt = projcs_with_towgs84("TOWGS84[0,0,0,0,0,0,0]", epsg);
+        let message = extract_epsg_from_wkt(&wkt).unwrap_err().to_string();
+        assert!(message.contains("TOWGS84"), "EPSG:{epsg}: {message}");
+        assert!(
+            message.contains(&format!("EPSG:{epsg}")),
+            "EPSG:{epsg}: {message}"
+        );
+        assert!(parse_crs_string(&wkt).is_err(), "EPSG:{epsg}");
     }
 }
 

@@ -25,7 +25,11 @@
 //! (mesh warns; PC warns for LAS WKT records and ignores it for sidecars).
 //!
 //! BOUNDCRS and TOWGS84 operations are rejected because an EPSG code alone
-//! cannot preserve their explicit transformation. One case is accepted: a
+//! cannot preserve their explicit transformation. Two cases are accepted. A
+//! `TOWGS84` whose three or seven values are all zero is accepted when the
+//! stamped EPSG code is a CRS that this crate places on WGS 84 without a
+//! datum shift (NAD83, ETRS89, WGS 84 and similar): the clause then states
+//! what the crate does. The other case is a
 //! BOUNDCRS whose SOURCECRS is a vertical CRS (`VERTCRS`, `VERTICALCRS` or
 //! `VERT_CS`), as PROJ writes the geoid model of a compound CRS. Its
 //! operation applies to heights only and is discarded with the vertical
@@ -33,6 +37,7 @@
 //! the root is an error, because the root must be a horizontal or compound
 //! CRS.
 
+use crate::catalogue::has_zero_shift_to_wgs84;
 use crate::error::CrsError;
 
 /// Result of a successful WKT scan.
@@ -73,7 +78,23 @@ pub(crate) const BYTE_ORDER_MARK: char = '\u{feff}';
 /// [`extract_epsg_from_wkt`] for text whose byte order mark, if any, is
 /// already removed.
 pub(crate) fn extract_epsg(wkt: &str) -> Result<WktExtraction, CrsError> {
-    reject_explicit_transforms(wkt)?;
+    let zero_towgs84 = reject_explicit_transforms(wkt)?;
+    let extraction = extract_scanned_epsg(wkt)?;
+    // A zero TOWGS84 is redundant only when the stamped code gets no datum
+    // shift from this crate. For any other code the two disagree.
+    if zero_towgs84 && !has_zero_shift_to_wgs84(extraction.epsg) {
+        return Err(CrsError::parse(format!(
+            "TOWGS84 declares a zero datum shift, but EPSG:{} is not a CRS that this crate \
+             places on WGS 84 without a shift (its datum is offset from WGS 84, or the code \
+             is not in the catalogue); the WKT and its code disagree",
+            extraction.epsg
+        )));
+    }
+    Ok(extraction)
+}
+
+/// Read the EPSG code of WKT text that has passed the transform gate.
+fn extract_scanned_epsg(wkt: &str) -> Result<WktExtraction, CrsError> {
     let bytes = wkt.as_bytes();
     let after_ws = skip_whitespace(bytes, 0);
     let (id, after_id) = read_identifier(bytes, after_ws).ok_or_else(|| {
@@ -179,7 +200,7 @@ const VERTICAL_KEYWORDS: &[&str] = &["VERT_CS", "VERTCRS", "VERTICALCRS"];
 /// still apply inside that block.
 ///
 /// Quoted names (with `""` escapes) are exempt from all checks.
-fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
+fn reject_explicit_transforms(wkt: &str) -> Result<bool, CrsError> {
     let bytes = wkt.as_bytes();
     // Bracket depth of the scan position, and the depth at which an
     // exempt vertical `BOUNDCRS` block opened while the scan is inside it.
@@ -187,6 +208,7 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
     let mut exempt_from: Option<usize> = None;
     // Whether the root block is a compound CRS.
     let mut root_is_compound = false;
+    let mut zero_towgs84 = false;
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'"' {
@@ -237,6 +259,8 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
                     && bound_crs_has_vertical_source(wkt, end)
                 {
                     exempt_from = Some(depth);
+                } else if id.eq_ignore_ascii_case("TOWGS84") && towgs84_is_zero(wkt, end) {
+                    zero_towgs84 = true;
                 } else if id.eq_ignore_ascii_case("BOUNDCRS") || id.eq_ignore_ascii_case("TOWGS84")
                 {
                     return Err(CrsError::parse(format!(
@@ -260,7 +284,26 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
             i += 1;
         }
     }
-    Ok(())
+    Ok(zero_towgs84)
+}
+
+/// Return `true` when the `TOWGS84` identifier that ends at `after_id` is
+/// followed (after optional ASCII whitespace) by a `[...]` block of three
+/// or seven numbers that are all zero. Any other shape returns `false`.
+fn towgs84_is_zero(wkt: &str, after_id: usize) -> bool {
+    let bytes = wkt.as_bytes();
+    let open = skip_whitespace(bytes, after_id);
+    if bytes.get(open) != Some(&b'[') {
+        return false;
+    }
+    let Some(close) = find_matching_bracket(bytes, open) else {
+        return false;
+    };
+    let values: Vec<&str> = wkt[open + 1..close].split(',').map(str::trim).collect();
+    matches!(values.len(), 3 | 7)
+        && values
+            .iter()
+            .all(|v| v.parse::<f64>().is_ok_and(|number| number == 0.0))
 }
 
 /// Return `true` when the `BOUNDCRS` identifier that ends at `after_id` is
