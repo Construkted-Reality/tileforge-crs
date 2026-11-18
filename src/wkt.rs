@@ -94,7 +94,16 @@ const HORIZONTAL_KEYWORDS: &[&str] = &[
     "PROJCRS", "GEOGCRS", "GEODCRS", // WKT2
 ];
 
-/// Scan every nesting level without recursion. Quoted names are not keywords.
+/// Scan every nesting level without recursion and reject two kinds of
+/// input outside quoted strings:
+///
+/// - the identifiers `BOUNDCRS` and `TOWGS84` (ASCII case-insensitive),
+///   whatever character follows them, because an EPSG code alone cannot
+///   carry their explicit transformation;
+/// - a `(` or `)` delimiter, because the block scanner understands square
+///   brackets only.
+///
+/// Quoted names (with `""` escapes) are exempt from both checks.
 fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
     let bytes = wkt.as_bytes();
     let mut i = 0;
@@ -112,11 +121,14 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
                 }
                 i += 1;
             }
+        } else if bytes[i] == b'(' || bytes[i] == b')' {
+            return Err(CrsError::parse(format!(
+                "CRS WKT contains '{}' outside a quoted string; this parser supports \
+                 square-bracket delimiters only",
+                char::from(bytes[i])
+            )));
         } else if let Some((id, end)) = read_identifier(bytes, i) {
-            let next = skip_whitespace(bytes, end);
-            if bytes.get(next) == Some(&b'[')
-                && (id.eq_ignore_ascii_case("BOUNDCRS") || id.eq_ignore_ascii_case("TOWGS84"))
-            {
+            if id.eq_ignore_ascii_case("BOUNDCRS") || id.eq_ignore_ascii_case("TOWGS84") {
                 return Err(CrsError::parse(format!(
                     "{} declares an explicit datum transformation that this EPSG-only parser cannot preserve; reproject the data with that transformation before conversion",
                     id.to_ascii_uppercase()
