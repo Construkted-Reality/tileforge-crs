@@ -18,6 +18,18 @@ revision, not by version, so a version bump here does not by itself break them.
   leg is not read. A `BOUNDCRS` on a horizontal CRS, a `BOUNDCRS` without one
   readable `SOURCECRS`, and `TOWGS84` outside that leg are still errors. A vertical
   `BOUNDCRS` at the root is an error with its own message.
+- `Reprojector::check_area_of_use` compares one source coordinate (the dataset
+  centre) with the EPSG area of use of the source CRS. It returns
+  `AreaOfUseCheck::Inside` within 1 degree of the area, `AreaOfUseCheck::Outside`
+  (a warning for the consumer, with the position, the area and the excess) from
+  1 to 20 degrees of arc outside, and `CrsError::OutsideAreaOfUse` beyond
+  20 degrees. A longitude difference is measured along the parallel.
+  It catches coordinates in the wrong unit and many wrong CRS declarations.
+  `to_ecef` is unchanged: a consumer must call the check.
+- `AreaOfUse`, `AreaOfUseCheck`, `OutsideAreaOfUse` and
+  `CrsError::OutsideAreaOfUse(String)`.
+- `tools/gen_area_of_use.py` generates `src/area_of_use_table.rs` from the `BBOX`
+  of 7,492 catalogue definitions.
 
 ### Changed
 - The WKT scanner rejects a `[` outside a quoted string that does not open the

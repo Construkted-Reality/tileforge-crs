@@ -48,6 +48,8 @@
 //! `extract_crs_from_las`, the `las` / `pasture-io` deps) stays in
 //! `tileforge-pc-crs`, which re-exports this crate's surface.
 
+mod area_of_use;
+mod area_of_use_table;
 mod crs_hint;
 mod enu;
 mod error;
@@ -56,6 +58,7 @@ mod sidecar;
 mod source_crs;
 mod wkt;
 
+pub use area_of_use::{AreaOfUse, AreaOfUseCheck, OutsideAreaOfUse};
 pub use crs_hint::{CrsHint, CrsResolution};
 pub use enu::{EnuFrame, ecef_to_geodetic_lonlat};
 pub use error::CrsError;
