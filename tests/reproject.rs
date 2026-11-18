@@ -7,7 +7,10 @@
 //! corpus. This file is the production-side anchor for that pin.
 //!
 //! The 27-point grid PROJ-FFI parity oracle lives in `parity_oracle.rs`;
-//! tests here are scalar single-point sanity checks.
+//! tests here are scalar single-point sanity checks. The two oracles come
+//! from different PROJ releases: the single-point values here from PROJ
+//! 9.6.2 (spike 0g), the grids in `tests/fixtures/*.parity-grid.txt` from
+//! PROJ 9.8.1 (see each fixture header).
 
 use tileforge_crs::{CrsError, Reprojector, SourceCrs};
 
