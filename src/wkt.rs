@@ -40,14 +40,17 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
         CrsError::parse("WKT VLR is empty or has no leading identifier".to_string())
     })?;
     let id_upper = id.to_ascii_uppercase();
+    let id_shown = echo_fragment(id);
     let after_open = skip_whitespace(bytes, after_id);
     if after_open >= bytes.len() || bytes[after_open] != b'[' {
         return Err(CrsError::parse(format!(
-            "WKT VLR identifier '{id}' is not followed by '['"
+            "WKT VLR identifier '{id_shown}' is not followed by '['"
         )));
     }
     let close_idx = find_matching_bracket(bytes, after_open).ok_or_else(|| {
-        CrsError::parse(format!("WKT VLR identifier '{id}' has unbalanced brackets"))
+        CrsError::parse(format!(
+            "WKT VLR identifier '{id_shown}' has unbalanced brackets"
+        ))
     })?;
     let body = &wkt[after_open + 1..close_idx];
 
@@ -78,7 +81,7 @@ pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
             })
         }
         _ => Err(CrsError::parse(format!(
-            "WKT VLR root is unexpected '{id}' (want a WKT1 PROJCS/GEOGCS/GEOCCS/COMPD_CS \
+            "WKT VLR root is unexpected '{id_shown}' (want a WKT1 PROJCS/GEOGCS/GEOCCS/COMPD_CS \
              or WKT2 PROJCRS/GEOGCRS/GEODCRS/COMPOUNDCRS)"
         ))),
     }
@@ -125,6 +128,20 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
         }
     }
     Ok(())
+}
+
+/// Longest fragment of caller input, in characters, that an error message
+/// repeats back.
+pub(crate) const ECHO_MAX_CHARS: usize = 64;
+
+/// Return `fragment` for use in an error message: unchanged when it has at
+/// most [`ECHO_MAX_CHARS`] characters, otherwise its first `ECHO_MAX_CHARS`
+/// characters followed by `...`.
+pub(crate) fn echo_fragment(fragment: &str) -> String {
+    match fragment.char_indices().nth(ECHO_MAX_CHARS) {
+        Some((cut, _)) => format!("{}...", &fragment[..cut]),
+        None => fragment.to_string(),
+    }
 }
 
 fn skip_whitespace(bytes: &[u8], mut i: usize) -> usize {
@@ -295,8 +312,9 @@ fn parse_authority_args(inner: &str) -> Result<u16, CrsError> {
     let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
     if parts.len() < 2 {
         return Err(CrsError::parse(format!(
-            "AUTHORITY/ID clause must have at least two arguments, got {} ({inner:?})",
-            parts.len()
+            "AUTHORITY/ID clause must have at least two arguments, got {} ({:?})",
+            parts.len(),
+            echo_fragment(inner)
         )));
     }
     let authority = strip_quotes(parts[0])?;
@@ -304,12 +322,14 @@ fn parse_authority_args(inner: &str) -> Result<u16, CrsError> {
     let code_str = strip_quotes_opt(parts[1]);
     if !authority.eq_ignore_ascii_case("EPSG") {
         return Err(CrsError::parse(format!(
-            "WKT VLR uses non-EPSG authority '{authority}'; only EPSG is supported"
+            "WKT VLR uses non-EPSG authority '{}'; only EPSG is supported",
+            echo_fragment(authority)
         )));
     }
     code_str.parse::<u16>().map_err(|e| {
         CrsError::parse(format!(
-            "AUTHORITY/ID code is not a valid EPSG u16: {code_str:?}: {e}"
+            "AUTHORITY/ID code is not a valid EPSG u16: {:?}: {e}",
+            echo_fragment(code_str)
         ))
     })
 }
@@ -329,7 +349,8 @@ fn strip_quotes(s: &str) -> Result<&str, CrsError> {
     let s = s.trim();
     if s.len() < 2 || !s.starts_with('"') || !s.ends_with('"') {
         return Err(CrsError::parse(format!(
-            "AUTHORITY argument is not quoted: {s:?}"
+            "AUTHORITY argument is not quoted: {:?}",
+            echo_fragment(s)
         )));
     }
     Ok(&s[1..s.len() - 1])
@@ -530,6 +551,37 @@ mod tests {
             CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],
             ID["EPSG",4326,URI["http://www.opengis.net/def/crs/EPSG/0/4326"]]]"#;
         assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 4326);
+    }
+
+    /// Every error that echoes caller input stays short and still shows the
+    /// start of the echoed fragment followed by the truncation marker.
+    #[test]
+    fn long_input_fragments_are_truncated_in_errors() {
+        let long = "A".repeat(65_536);
+        let shown = format!("{}...", "A".repeat(ECHO_MAX_CHARS));
+        let cases = [
+            long.clone(),
+            format!("{long}["),
+            format!("{long}[]"),
+            format!(r#"PROJCS["x",AUTHORITY[{long}]]"#),
+            format!(r#"PROJCS["x",AUTHORITY["{long}","1"]]"#),
+            format!(r#"PROJCS["x",AUTHORITY["EPSG","{long}"]]"#),
+            format!(r#"PROJCS["x",AUTHORITY[{long},"1"]]"#),
+        ];
+        for wkt in &cases {
+            let msg = extract_epsg_from_wkt(wkt).unwrap_err().to_string();
+            assert!(msg.len() < 400, "len {}: {}", msg.len(), &msg[..200]);
+            assert!(msg.contains(&shown), "msg: {msg}");
+        }
+    }
+
+    #[test]
+    fn echo_fragment_keeps_short_text_and_cuts_on_a_char_boundary() {
+        assert_eq!(echo_fragment("EPSG"), "EPSG");
+        let exact = "é".repeat(ECHO_MAX_CHARS);
+        assert_eq!(echo_fragment(&exact), exact);
+        let over = "é".repeat(ECHO_MAX_CHARS + 1);
+        assert_eq!(echo_fragment(&over), format!("{exact}..."));
     }
 
     #[test]
