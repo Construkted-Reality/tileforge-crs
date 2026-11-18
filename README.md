@@ -15,9 +15,16 @@ A release here changes nothing downstream until a consumer moves its pin.
 
 - Geographic sources take `[lon_deg, lat_deg, h_m]`, not the EPSG-official lat,lon order.
 - Invalid input fails with an error. This covers non-finite coordinates, ECEF origins
-  outside `[6.2e6, 6.6e6]` m, and WKT `BOUNDCRS`/`TOWGS84` operations.
+  outside `[6.2e6, 6.6e6]` m, and WKT `BOUNDCRS`/`TOWGS84` operations. One `BOUNDCRS`
+  is accepted: the vertical leg of a compound CRS, whose `SOURCECRS` is a vertical CRS
+  (a geoid model, as PROJ writes it). The parser discards it with the vertical
+  component and sets `vertical_stripped`, so the caller's vertical-datum warning
+  applies.
 - The WKT scanner supports square-bracket delimiters only. A `(` or `)` outside a quoted
-  string is an error.
+  string is an error, and so is a `[` that does not follow a keyword or a `]` that
+  closes no block.
+- One leading UTF-8 byte order mark (U+FEFF, as Windows Notepad writes it) is ignored in
+  a sidecar, in `parse_crs_string` and in `extract_epsg_from_wkt`.
 - An ambiguous WKT identifier is an error: two different EPSG codes in the top-level
   `AUTHORITY`/`ID` clauses of one block, or a compound CRS with two horizontal blocks.
 - The parser resolves a CRS by its EPSG code only. A WKT with no EPSG `AUTHORITY`/`ID`

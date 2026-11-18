@@ -7,7 +7,9 @@
 //! metadata). PDAL, lastools, QGIS and GDAL write an
 //! `AUTHORITY["EPSG","NNNN"]` clause; ESRI-style `.prj` files usually do
 //! not, and such a WKT fails because this scanner resolves a CRS by its
-//! EPSG code only. Square brackets are the only supported delimiters.
+//! EPSG code only. Square brackets are the only supported delimiters,
+//! and every `[` must open the block of an identifier. One leading UTF-8
+//! byte order mark is ignored.
 //!
 //! Supported root blocks — both **WKT1** and **WKT2** (LAS 1.4 producers
 //! increasingly emit WKT2):
@@ -20,8 +22,16 @@
 //! error. For a compound CRS the scanner descends into the one horizontal
 //! subblock (a second one is an error) and reports the vertical component as stripped
 //! via `WktExtraction::vertical_stripped` — the caller decides what to do
-//! (mesh warns; PC warns for LAS WKT records and ignores it for sidecars). BOUNDCRS and TOWGS84 operations are rejected
-//! because an EPSG code alone cannot preserve their explicit transformation.
+//! (mesh warns; PC warns for LAS WKT records and ignores it for sidecars).
+//!
+//! BOUNDCRS and TOWGS84 operations are rejected because an EPSG code alone
+//! cannot preserve their explicit transformation. One case is accepted: a
+//! BOUNDCRS whose SOURCECRS is a vertical CRS (`VERTCRS`, `VERTICALCRS` or
+//! `VERT_CS`), as PROJ writes the geoid model of a compound CRS. Its
+//! operation applies to heights only and is discarded with the vertical
+//! component, so the result sets `vertical_stripped`. Such a BOUNDCRS at
+//! the root is an error, because the root must be a horizontal or compound
+//! CRS.
 
 use crate::error::CrsError;
 
@@ -46,10 +56,13 @@ pub struct WktExtraction {
 ///
 /// # Errors
 ///
-/// [`CrsError::Parse`] when the WKT has an unsupported root, unbalanced
-/// brackets, a `(` or `)` delimiter, a `BOUNDCRS` or `TOWGS84` operation,
-/// no EPSG `AUTHORITY`/`ID` clause, two different EPSG codes in one
-/// block, or a compound CRS with more than one horizontal block.
+/// [`CrsError::Parse`] when the WKT has an unsupported root (including a
+/// `BOUNDCRS` on a vertical CRS), unbalanced brackets, a `[` that does not
+/// open the block of an identifier, a `]` that closes no block, a `(` or
+/// `)` delimiter, a `BOUNDCRS` or `TOWGS84` operation outside the vertical
+/// leg of a compound CRS, no EPSG `AUTHORITY`/`ID` clause, two different
+/// EPSG codes in one block, or a compound CRS with more than one
+/// horizontal block.
 pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
     extract_epsg(wkt.strip_prefix(BYTE_ORDER_MARK).unwrap_or(wkt))
 }
