@@ -12,6 +12,9 @@
 //! - [`CrsError::UnknownEpsg`] — `Reprojector::new` could not resolve a
 //!   source EPSG (or the fixed ECEF target) against the proj4
 //!   `crs-definitions` catalogue.
+//! - [`CrsError::DatumShiftUnavailable`]: `Reprojector::new` refused a
+//!   source EPSG whose datum needs a shift to WGS 84 that the crate cannot
+//!   supply.
 //! - [`CrsError::OutsideAreaOfUse`]: `Reprojector::check_area_of_use` found a
 //!   source coordinate far outside the EPSG area of use of its CRS.
 //! - [`CrsError::Reproject`] — `Reprojector::to_ecef` failed to transform
@@ -33,6 +36,19 @@ pub enum CrsError {
     /// catalogue (source EPSG, or the fixed EPSG:4978 ECEF target).
     #[error("{0}")]
     UnknownEpsg(String),
+
+    /// The source CRS is on a datum whose ellipsoid is not GRS80 or WGS 84,
+    /// and the crate has no verified Helmert transformation to WGS 84 for it:
+    /// EPSG publishes no static one, or the catalogue definition cannot
+    /// reproduce the PROJ position. Without the shift the data would land
+    /// tens to hundreds of metres from its true position, so the CRS is
+    /// refused. Carries the EPSG code.
+    #[error(
+        "EPSG:{0} is on a datum that needs a shift to WGS 84, and no verified \
+         Helmert transformation is available for it, so its position cannot be \
+         derived; reproject the data to a WGS 84 based CRS before conversion"
+    )]
+    DatumShiftUnavailable(u16),
 
     /// A source coordinate lies more than 20 degrees outside the EPSG area
     /// of use of its CRS (`Reprojector::check_area_of_use`). The usual causes
@@ -75,6 +91,11 @@ impl CrsError {
     /// Construct an [`CrsError::UnknownEpsg`].
     pub fn unknown_epsg(msg: impl Into<String>) -> Self {
         Self::UnknownEpsg(msg.into())
+    }
+
+    /// Construct a [`CrsError::DatumShiftUnavailable`] for the refused code.
+    pub fn datum_shift_unavailable(epsg: u16) -> Self {
+        Self::DatumShiftUnavailable(epsg)
     }
 
     /// Construct a [`CrsError::OutsideAreaOfUse`].

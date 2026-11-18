@@ -11,6 +11,18 @@ revision, not by version, so a version bump here does not by itself break them.
 ## [Unreleased]
 
 ### Added
+- `Reprojector::datum_shift` and `DatumShift` report the Helmert operation
+  that a reprojector applies (identifier, name, published accuracy,
+  parameters), so that a consumer can warn the user.
+- `CrsError::DatumShiftUnavailable(u16)`: `Reprojector::new` refuses a source
+  CRS on an ellipsoid other than GRS80 or WGS 84 when no verified Helmert
+  transformation to WGS 84 is available for it: the PROJ database has no
+  static one (for example Xian 1980 and New Beijing), or `proj4rs` cannot
+  reproduce the PROJ position (`tools/datum-shift-exclusions.txt`). This
+  refuses 529 catalogue CRSs that `Reprojector::new` accepted before.
+  `is_supported_epsg` returns `false` for these codes.
+- `tools/gen_datum_shifts.py` generates `src/datum_shift_table.rs` and the
+  PROJ reference fixture `tests/fixtures/datum-shift-reference.txt`.
 - A compound CRS whose vertical leg is a `BOUNDCRS` on a vertical CRS (`VERTCRS`,
   `VERTICALCRS` or `VERT_CS` as the first child of `SOURCECRS`) parses. PROJ-based
   tools write a geoid model this way. The result is the horizontal EPSG code with
@@ -45,7 +57,9 @@ revision, not by version, so a version bump here does not by itself break them.
   A zero `TOWGS84` on a CRS on any other ellipsoid or on another sphere, on a
   NAD27 CRS or on a code outside the catalogue is an error, because a zero
   shift cannot be confirmed for it. A `TOWGS84` with a non-zero value stays
-  refused.
+  refused. A GRS80 or WGS 84 based CRS that gets a Helmert shift from the
+  datum shift table (for example EPSG:2100, GGRS87) is refused too: a zero
+  clause contradicts the shift.
 - `crs-definitions` 0.4 is now a direct dependency (it was already a
   dependency of `proj4rs`; the version and features are the same).
 - The WKT scanner rejects a `[` outside a quoted string that does not open the
@@ -81,6 +95,25 @@ revision, not by version, so a version bump here does not by itself break them.
   keywords.
 
 ### Fixed
+- **Apply the datum shift for source CRSs whose datum is offset from WGS 84.**
+  The proj4 catalogue carries no datum shift, so `Reprojector` placed the
+  latitude and longitude of such a CRS directly on the WGS 84 ellipsoid. The
+  position was wrong by the offset of the datum: 83 m to 166 m for the
+  British, Dutch, Swiss, German, Austrian, Belgian and ED50 national grids,
+  325 m for the Greek Grid, with a median of 112 m over all affected CRSs.
+  `Reprojector` now applies a Helmert transformation: the first static Helmert
+  operation in the ranking that PROJ 9.8.1 makes, without grid files, for the
+  area of use of the CRS. This changes the output for 1,989 catalogue CRSs
+  (1,954 on an ellipsoid other than GRS80 or WGS 84, and 35 on GRS80 or WGS 84
+  whose first-ranked PROJ operation is a Helmert shift of more than 5 m) and
+  for no other CRS. Every one of them agrees with PROJ 9.8.1 to 10 µm on the
+  reference fixture. The output of 175 of them (GSK-2011, a zero-parameter
+  operation) moves less than 1 m. Known limit: EPSG:6988 to 6991 (IG05/12 and
+  Israeli Grid 05/12) are 78 m from WGS 84 and get no shift.
+- For the same 1,989 CRSs, restate what `proj4rs` 0.1.10 misreads in a
+  catalogue definition: the `+k_0=` scale factor (ignored), an ellipsoid
+  given by its minor axis (wrong flattening in the Transverse Mercator
+  series), and a `+pm=` prime meridian (degrees added as radians).
 - `parse_crs_string`, `detect_crs_from_sidecar` and `extract_epsg_from_wkt` ignore
   one leading UTF-8 byte order mark (U+FEFF), and `parse_crs_string` also ignores
   the whitespace after it. Before, a `.prj` saved by Windows Notepad failed with

@@ -7,6 +7,10 @@
 //! the 3D Tiles 1.1 box-bounding-volume contract. Source EPSGs are
 //! resolved through proj4rs's `crs-definitions` feature, which carries
 //! the proj4 EPSG catalogue.
+//!
+//! The catalogue carries no datum shift. A source CRS whose datum is offset
+//! from WGS 84 gets its shift from the Helmert table in
+//! [`crate::datum_shift`], or is refused when the table has none.
 
 use proj4rs::Proj;
 use proj4rs::transform::transform;
@@ -14,11 +18,21 @@ use proj4rs::transform::transform;
 use crate::area_of_use::{
     AreaOfUse, AreaOfUseCheck, OutsideAreaOfUse, REFUSAL_MARGIN_DEG, TOLERANCE_DEG,
 };
+use crate::datum_shift::{DatumShift, DatumShiftRule, datum_shift_rule};
 use crate::error::CrsError;
 use crate::source_crs::SourceCrs;
 
 /// EPSG code for ECEF metres. Fixed reprojection target.
 const EPSG_ECEF: u16 = 4978;
+
+/// EPSG code for geographic WGS 84, the hub of a datum shift.
+const EPSG_WGS84: u16 = 4326;
+
+/// A Helmert shift and the geographic WGS 84 CRS that it leads to.
+struct HorizontalShift {
+    shift: &'static DatumShift,
+    wgs84: Proj,
+}
 
 /// Reprojector from a fixed source EPSG to ECEF (EPSG:4978).
 ///
@@ -34,6 +48,9 @@ pub struct Reprojector {
     source_is_latlong: bool,
     source: Proj,
     target: Proj,
+    /// Present when the source datum needs a Helmert shift to WGS 84. The
+    /// `source` definition then carries the shift as a `+towgs84` clause.
+    datum_shift: Option<HorizontalShift>,
 }
 
 impl std::fmt::Debug for Reprojector {
@@ -41,21 +58,36 @@ impl std::fmt::Debug for Reprojector {
         f.debug_struct("Reprojector")
             .field("source_epsg", &self.source_epsg)
             .field("target_epsg", &EPSG_ECEF)
+            .field("datum_shift", &self.datum_shift())
             .finish()
     }
 }
 
 impl Reprojector {
-    /// Build a reprojector for `source → EPSG:4978`. Fails with
-    /// [`CrsError::UnknownEpsg`] if the source EPSG isn't in the proj4
-    /// catalogue.
+    /// Build a reprojector for `source → EPSG:4978`.
+    ///
+    /// A source CRS whose catalogue definition names only an ellipsoid, and
+    /// whose datum is offset from WGS 84, gets the Helmert datum shift that
+    /// [`Reprojector::datum_shift`] reports.
+    ///
+    /// # Errors
+    ///
+    /// - [`CrsError::UnknownEpsg`] if the source EPSG isn't in the proj4
+    ///   catalogue.
+    /// - [`CrsError::DatumShiftUnavailable`] if the source CRS needs a datum
+    ///   shift and no verified static Helmert transformation to WGS 84 is
+    ///   available: the PROJ database has none, or proj4rs cannot reproduce
+    ///   the PROJ position from the catalogue definition. The position on
+    ///   WGS 84 cannot be derived, so the reprojector refuses the CRS instead
+    ///   of placing the data tens to hundreds of metres away.
     pub fn new(source: SourceCrs) -> Result<Self, CrsError> {
-        let source_proj = Proj::from_epsg_code(source.epsg).map_err(|e| {
+        let unknown = |e: proj4rs::errors::Error| {
             CrsError::unknown_epsg(format!(
                 "EPSG:{} not in crs-definitions catalogue: {e:?}",
                 source.epsg
             ))
-        })?;
+        };
+        let mut source_proj = Proj::from_epsg_code(source.epsg).map_err(unknown)?;
         let target_proj = Proj::from_epsg_code(EPSG_ECEF).map_err(|e| {
             // This should be infallible — EPSG:4978 is in every build of
             // crs-definitions — but treat the error path as a real error
@@ -64,13 +96,43 @@ impl Reprojector {
                 "EPSG:{EPSG_ECEF} (ECEF target) missing from catalogue: {e:?}"
             ))
         })?;
+        let datum_shift = match datum_shift_rule(source.epsg) {
+            DatumShiftRule::NotNeeded => None,
+            DatumShiftRule::Unavailable => {
+                return Err(CrsError::datum_shift_unavailable(source.epsg));
+            }
+            DatumShiftRule::Helmert(shift) => {
+                let definition = crs_definitions::from_code(source.epsg)
+                    .ok_or_else(|| unknown(proj4rs::errors::Error::ProjectionNotFound))?;
+                source_proj =
+                    Proj::from_proj_string(&shift.definition_with_shift(definition.proj4))
+                        .map_err(unknown)?;
+                let wgs84 = Proj::from_epsg_code(EPSG_WGS84).map_err(|e| {
+                    CrsError::unknown_epsg(format!(
+                        "EPSG:{EPSG_WGS84} (datum shift hub) missing from catalogue: {e:?}"
+                    ))
+                })?;
+                Some(HorizontalShift { shift, wgs84 })
+            }
+        };
         let source_is_latlong = source_proj.is_latlong();
         Ok(Self {
             source_epsg: source.epsg,
             source_is_latlong,
             source: source_proj,
             target: target_proj,
+            datum_shift,
         })
+    }
+
+    /// The Helmert datum shift that this reprojector applies between the
+    /// source datum and WGS 84, or `None` when the source needs none.
+    ///
+    /// A consumer should report a `Some` to the user as a warning: the
+    /// position then depends on a Helmert approximation whose published
+    /// accuracy is [`DatumShift::accuracy_m`].
+    pub fn datum_shift(&self) -> Option<&'static DatumShift> {
+        self.datum_shift.as_ref().map(|h| h.shift)
     }
 
     /// Return the source coordinate reference system selected at construction.
@@ -103,6 +165,12 @@ impl Reprojector {
     /// it produces plausible-looking output at the wrong place with no
     /// error. This is an inherent, documented residual of axis-order
     /// ambiguity, not a resolved bug: **callers MUST pass `[lon, lat, h]`.**
+    ///
+    /// **Datum shift.** When [`Reprojector::datum_shift`] is `Some`, the
+    /// horizontal position is shifted from the source datum to WGS 84 with
+    /// that Helmert transformation. The height is not shifted: it passes
+    /// through as a height above the WGS 84 ellipsoid, as it does for every
+    /// other source CRS and as PROJ does for a 2D source CRS.
     ///
     /// Identity (source EPSG == 4978) short-circuits without calling
     /// proj4rs, which keeps the bit-equal semantics the integration
@@ -143,12 +211,26 @@ impl Reprojector {
         } else {
             (xyz[0], xyz[1], xyz[2])
         };
-        transform(&self.source, &self.target, &mut p).map_err(|e| {
+        let failed = |e: proj4rs::errors::Error| {
             CrsError::reproject(format!(
                 "reproject EPSG:{} → EPSG:{EPSG_ECEF} for ({}, {}, {}) failed: {e:?}",
                 self.source_epsg, xyz[0], xyz[1], xyz[2]
             ))
-        })?;
+        };
+        match &self.datum_shift {
+            // A geocentric source has no separate height: the Helmert shift
+            // applies to all three axes in the single transform below.
+            Some(horizontal) if !self.source.is_geocent() => {
+                // Shift the position to WGS 84 at its own height, as PROJ
+                // does, then replace the shifted height with the source
+                // height in metres.
+                let height_m = p.2 * self.source.vto_meter();
+                transform(&self.source, &horizontal.wgs84, &mut p).map_err(failed)?;
+                p.2 = height_m;
+                transform(&horizontal.wgs84, &self.target, &mut p).map_err(failed)?;
+            }
+            _ => transform(&self.source, &self.target, &mut p).map_err(failed)?,
+        }
         Ok([p.0, p.1, p.2])
     }
 
@@ -293,14 +375,16 @@ pub fn is_geographic_epsg(epsg: u16) -> bool {
         .unwrap_or(false)
 }
 
-/// `true` iff `epsg` resolves in the proj4 `crs-definitions` catalogue —
-/// i.e. [`Reprojector::new`] would succeed for it. A cheap pre-flight
+/// `true` iff [`Reprojector::new`] would succeed for `epsg`: the code
+/// resolves in the proj4 `crs-definitions` catalogue and, where its datum
+/// needs a shift to WGS 84, a Helmert shift is available. A cheap pre-flight
 /// for `--crs` validation and friendly error messages: it builds (and
 /// drops) only the source `Proj`, not the full reprojector, and never
-/// touches the fixed ECEF target. Returns `false` for sentinels and for
-/// any code absent from the catalogue.
+/// touches the fixed ECEF target. Returns `false` for sentinels, for any
+/// code absent from the catalogue, and for a code that
+/// [`Reprojector::new`] refuses with [`CrsError::DatumShiftUnavailable`].
 pub fn is_supported_epsg(epsg: u16) -> bool {
-    Proj::from_epsg_code(epsg).is_ok()
+    Proj::from_epsg_code(epsg).is_ok() && datum_shift_rule(epsg) != DatumShiftRule::Unavailable
 }
 
 #[cfg(test)]

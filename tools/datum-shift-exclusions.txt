@@ -1,0 +1,69 @@
+# CRS codes that tools/gen_datum_shifts.py keeps out of the datum shift table.
+# PROJ has a Helmert transformation for each of them, but proj4rs cannot reproduce
+# the PROJ position from the catalogue definition, so the shift cannot be verified.
+# The generator puts these codes on the refusal list.
+# Found with: cargo test --test datum_shift_parity, on a table generated without this file.
+# Format: EPSG code, tab, reason
+2057	proj4rs 0.1.10 cannot build the projection of this definition
+2065	proj4rs 0.1.10 cannot build the projection of this definition
+2314	proj4rs 0.1.10 cannot build the projection of this definition
+3068	proj4rs 0.1.10 cannot build the projection of this definition
+3139	proj4rs 0.1.10 cannot build the projection of this definition
+3140	proj4rs 0.1.10 cannot build the projection of this definition
+3167	proj4rs 0.1.10 cannot build the projection of this definition
+3168	proj4rs 0.1.10 cannot build the projection of this definition
+3993	proj4rs 0.1.10 cannot build the projection of this definition
+4390	proj4rs 0.1.10 cannot build the projection of this definition
+4391	proj4rs 0.1.10 cannot build the projection of this definition
+4392	proj4rs 0.1.10 cannot build the projection of this definition
+4393	proj4rs 0.1.10 cannot build the projection of this definition
+4394	proj4rs 0.1.10 cannot build the projection of this definition
+4395	proj4rs 0.1.10 cannot build the projection of this definition
+4396	proj4rs 0.1.10 cannot build the projection of this definition
+4397	proj4rs 0.1.10 cannot build the projection of this definition
+4398	proj4rs 0.1.10 cannot build the projection of this definition
+4801	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4802	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4803	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4804	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4805	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4806	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4807	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4810	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4811	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4813	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4816	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4817	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4818	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4820	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4901	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+4904	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+5132	the catalogue definition omits the Tokyo 1892 longitude offset; 246 m to 285 m from PROJ
+5172	the catalogue definition omits the Tokyo 1892 longitude offset; 246 m to 285 m from PROJ
+5221	proj4rs 0.1.10 cannot build the projection of this definition
+5224	proj4rs 0.1.10 cannot build the projection of this definition
+5225	proj4rs 0.1.10 cannot build the projection of this definition
+5229	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+5513	proj4rs 0.1.10 cannot build the projection of this definition
+5514	proj4rs 0.1.10 cannot build the projection of this definition
+5515	proj4rs 0.1.10 cannot build the projection of this definition
+5516	proj4rs 0.1.10 cannot build the projection of this definition
+5530	proj4rs 0.1.10 cannot build the projection of this definition
+7400	geographic CRS with a prime meridian other than Greenwich; proj4rs 0.1.10 ignores it
+8352	proj4rs 0.1.10 cannot build the projection of this definition
+8353	proj4rs 0.1.10 cannot build the projection of this definition
+8441	proj4rs 0.1.10 cannot build the projection of this definition
+24500	proj4rs 0.1.10 cannot build the projection of this definition
+24571	proj4rs 0.1.10 cannot build the projection of this definition
+27200	proj4rs 0.1.10 cannot build the projection of this definition
+28191	proj4rs 0.1.10 cannot build the projection of this definition
+28193	proj4rs 0.1.10 cannot build the projection of this definition
+29101	proj4rs 0.1.10 cannot build the projection of this definition
+29700	proj4rs 0.1.10 cannot build the projection of this definition
+29701	proj4rs 0.1.10 cannot build the projection of this definition
+29702	proj4rs 0.1.10 cannot build the projection of this definition
+29871	proj4rs 0.1.10 cannot build the projection of this definition
+29872	proj4rs 0.1.10 cannot build the projection of this definition
+29873	proj4rs 0.1.10 cannot build the projection of this definition
+29874	proj4rs 0.1.10 cannot build the projection of this definition
+30200	proj4rs 0.1.10 cannot build the projection of this definition
