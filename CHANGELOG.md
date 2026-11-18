@@ -15,7 +15,8 @@ revision, not by version, so a version bump here does not by itself break them.
   centre) with the EPSG area of use of the source CRS. It returns
   `AreaOfUseCheck::Inside` within 1 degree of the area, `AreaOfUseCheck::Outside`
   (a warning for the consumer, with the position, the area and the excess) from
-  1 to 20 degrees outside, and `CrsError::OutsideAreaOfUse` beyond 20 degrees.
+  1 to 20 degrees of arc outside, and `CrsError::OutsideAreaOfUse` beyond
+  20 degrees. A longitude difference is measured along the parallel.
   It catches coordinates in the wrong unit and many wrong CRS declarations.
   `to_ecef` is unchanged: a consumer must call the check.
 - `AreaOfUse`, `AreaOfUseCheck`, `OutsideAreaOfUse` and

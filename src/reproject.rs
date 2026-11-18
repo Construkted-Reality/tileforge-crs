@@ -159,14 +159,18 @@ impl Reprojector {
     /// in the wrong unit, or coordinates of another CRS, give a valid position
     /// in the wrong part of the world. Call this once with a representative
     /// coordinate (the dataset centre) before a conversion. `xyz` has the same
-    /// axis order and units as for [`Reprojector::to_ecef`]. The height is not
-    /// used.
+    /// axis order and units as for [`Reprojector::to_ecef`]. The value of a
+    /// finite height does not affect the result.
+    ///
+    /// Distances are in degrees of arc: a longitude difference is measured
+    /// along the parallel of the position.
     ///
     /// - [`AreaOfUseCheck::Inside`]: inside the area, or within 1 degree of it.
     /// - [`AreaOfUseCheck::Outside`]: 1 to 20 degrees outside. The data can be
     ///   valid, so the consumer should pass this on as a warning.
     /// - [`AreaOfUseCheck::Unknown`]: the catalogue records no area for the
-    ///   CRS, or the source is EPSG:4978.
+    ///   CRS, the source is EPSG:4978, or a geocentric source coordinate is
+    ///   not near the surface of the Earth.
     ///
     /// The check cannot detect a wrong CRS whose coordinates fall inside the
     /// area of use.
@@ -175,30 +179,36 @@ impl Reprojector {
     ///
     /// - [`CrsError::OutsideAreaOfUse`] when the position is more than
     ///   20 degrees outside the area of use.
-    /// - [`CrsError::Reproject`] when the coordinate cannot be transformed
-    ///   (non-finite input, or a projection failure).
+    /// - [`CrsError::Reproject`] when a coordinate is not finite (on any
+    ///   axis, for every source) or the projection fails.
     pub fn check_area_of_use(&self, xyz: [f64; 3]) -> Result<AreaOfUseCheck, CrsError> {
+        if !xyz.iter().all(|c| c.is_finite()) {
+            return Err(CrsError::reproject(format!(
+                "non-finite input coordinate ({}, {}, {}) for EPSG:{}",
+                xyz[0], xyz[1], xyz[2], self.source_epsg
+            )));
+        }
         if self.is_identity() {
             return Ok(AreaOfUseCheck::Unknown);
         }
         let Some(area) = AreaOfUse::for_epsg(self.source_epsg) else {
             return Ok(AreaOfUseCheck::Unknown);
         };
-        // A geocentric source has no separate height. For every other source
-        // the height is dropped, so a height in the wrong unit cannot move
-        // the horizontal position that is checked.
-        let position = if self.source.is_geocent() {
-            xyz
-        } else {
-            if !xyz[2].is_finite() {
-                return Err(CrsError::reproject(format!(
-                    "non-finite input coordinate ({}, {}, {}) for EPSG:{}",
-                    xyz[0], xyz[1], xyz[2], self.source_epsg
-                )));
+        let ecef = if self.source.is_geocent() {
+            // A geocentric source has no separate height. Its direction
+            // from the geocentre gives a position only near the surface.
+            let ecef = self.to_ecef(xyz)?;
+            let radius = (ecef[0].powi(2) + ecef[1].powi(2) + ecef[2].powi(2)).sqrt();
+            if !(GEOCENTRIC_MIN_RADIUS_M..=GEOCENTRIC_MAX_RADIUS_M).contains(&radius) {
+                return Ok(AreaOfUseCheck::Unknown);
             }
-            [xyz[0], xyz[1], 0.0]
+            ecef
+        } else {
+            // The height is dropped, so a height in the wrong unit cannot
+            // move the horizontal position that is checked.
+            self.to_ecef([xyz[0], xyz[1], 0.0])?
         };
-        let (lon_deg, lat_deg) = geodetic_degrees(self.to_ecef(position)?);
+        let (lon_deg, lat_deg) = geodetic_degrees(ecef);
         let excess_deg = area.excess_deg(lon_deg, lat_deg);
         if excess_deg <= TOLERANCE_DEG {
             return Ok(AreaOfUseCheck::Inside);
@@ -235,6 +245,12 @@ impl Reprojector {
         self.source_epsg == EPSG_ECEF
     }
 }
+
+/// Radius band, in metres from the geocentre, in which a geocentric source
+/// coordinate has a position on the Earth that the area-of-use check can
+/// judge. The same band as the ENU frame origin guard.
+const GEOCENTRIC_MIN_RADIUS_M: f64 = 6.2e6;
+const GEOCENTRIC_MAX_RADIUS_M: f64 = 6.6e6;
 
 /// WGS 84 first eccentricity squared.
 const WGS84_ES: f64 = 0.006_694_379_990_141_316_5;

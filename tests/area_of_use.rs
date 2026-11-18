@@ -67,7 +67,7 @@ fn feet_read_as_metres_are_a_warning() {
 #[test]
 fn national_grid_used_past_its_zone_is_a_warning() {
     // Norway uses ETRS89 / UTM zone 33N (nominal 12°E to 18°E) nationwide.
-    // Kirkenes, at 30°E, is 12 degrees outside the box.
+    // Kirkenes, at 30°E, is 12 degrees of longitude outside the box.
     let check = reprojector(25833)
         .check_area_of_use([1_079_000.0, 7_780_000.0, 20.0])
         .unwrap();
@@ -76,13 +76,56 @@ fn national_grid_used_past_its_zone_is_a_warning() {
     };
     assert_eq!(outside.epsg, 25833);
     assert!((outside.lon_deg - 30.0).abs() < 1.0, "{outside:?}");
+    // 12 degrees of longitude at 69.7°N are 4.2 degrees of arc.
     assert!(
-        outside.excess_deg > 10.0 && outside.excess_deg < 14.0,
+        outside.excess_deg > 3.5 && outside.excess_deg < 5.0,
         "{outside:?}"
     );
     let message = outside.to_string();
     assert!(message.contains("EPSG:25833"), "{message}");
     assert!(message.contains("outside the area of use"), "{message}");
+}
+
+#[test]
+fn point_near_a_pole_is_inside_a_box_that_reaches_the_pole() {
+    // EPSG:5482 (RSRGD2000 / RSPS2000, Ross Sea region) covers 150°E to
+    // 150°W from 76°S to the South Pole. A point 500 m from the pole is in
+    // the box whatever its longitude, because every meridian meets there.
+    let check = reprojector(5482).check_area_of_use([5_000_000.0, 999_500.39, 0.0]);
+    assert_eq!(check, Ok(AreaOfUseCheck::Inside));
+    // EPSG:3032 (Australian Antarctic polar stereographic) covers 45°E to
+    // 160°E to the South Pole. 89.8°S, 100°W is 0.2 degrees from the pole.
+    let check = reprojector(3032).check_area_of_use([5_996_226.54, 5_978_599.63, 0.0]);
+    assert_eq!(check, Ok(AreaOfUseCheck::Inside));
+    // The pole itself.
+    let check = reprojector(5482).check_area_of_use([5_000_000.0, 1_000_000.0, 0.0]);
+    assert_eq!(check, Ok(AreaOfUseCheck::Inside));
+}
+
+#[test]
+fn polar_and_antimeridian_boxes_accept_their_own_data() {
+    // EPSG:3031 (Antarctic polar stereographic) at 75°S, 0°E.
+    let check = reprojector(3031).check_area_of_use([0.0, 1_638_783.24, 0.0]);
+    assert_eq!(check, Ok(AreaOfUseCheck::Inside));
+    // EPSG:5482 inside its box at 80°S, 170°E.
+    let check = reprojector(5482).check_area_of_use([4_806_738.06, 2_096_042.91, 0.0]);
+    assert_eq!(check, Ok(AreaOfUseCheck::Inside));
+    // EPSG:4269 (NAD83) crosses the antimeridian: Attu Island, 172.9°E.
+    let check = reprojector(4269).check_area_of_use([172.9, 52.9, 0.0]);
+    assert_eq!(check, Ok(AreaOfUseCheck::Inside));
+}
+
+#[test]
+fn longitude_excess_is_measured_along_the_parallel() {
+    // Jan Mayen (8.5°W, 71°N) in ETRS89 / UTM zone 33N is 20.5 degrees of
+    // longitude west of the box, which is 6.7 degrees of arc at 71°N.
+    let check = reprojector(25833)
+        .check_area_of_use([-334_878.96, 8_042_077.03, 0.0])
+        .unwrap();
+    let AreaOfUseCheck::Outside(outside) = check else {
+        panic!("want Outside, got {check:?}");
+    };
+    assert!((outside.excess_deg - 6.67).abs() < 0.05, "{outside:?}");
 }
 
 #[test]
@@ -118,6 +161,19 @@ fn ecef_source_has_no_area_to_check() {
 }
 
 #[test]
+fn geocentric_source_far_from_the_ellipsoid_is_not_judged() {
+    // EPSG:4936 is ETRS89 geocentric. A coordinate a few metres from the
+    // geocentre has a direction but no meaningful position on the Earth.
+    for xyz in [[1.0, 0.0, 0.0], [12.5, -3.0, 22.9]] {
+        let check = reprojector(4936).check_area_of_use(xyz);
+        assert_eq!(check, Ok(AreaOfUseCheck::Unknown), "{xyz:?}");
+    }
+    // A real ETRS89 geocentric position (Frankfurt) is checked.
+    let check = reprojector(4936).check_area_of_use([4_051_406.0, 618_317.0, 4_870_927.0]);
+    assert_eq!(check, Ok(AreaOfUseCheck::Inside));
+}
+
+#[test]
 fn geographic_source_is_checked_in_degrees() {
     // NAD83 geographic (EPSG:4269): North America.
     let check = reprojector(4269).check_area_of_use([-122.3, 47.6, 0.0]);
@@ -133,9 +189,13 @@ fn geographic_source_is_checked_in_degrees() {
 }
 
 #[test]
-fn non_finite_coordinate_is_an_error() {
-    let err = reprojector(32617)
-        .check_area_of_use([f64::NAN, 4_851_490.0, 0.0])
-        .unwrap_err();
-    assert!(matches!(err, CrsError::Reproject(_)), "{err:?}");
+fn non_finite_coordinate_is_an_error_for_every_source() {
+    for epsg in [32617_u16, 4326, 4978] {
+        for axis in 0..3 {
+            let mut xyz = [10.0, 45.0, 0.0];
+            xyz[axis] = f64::NAN;
+            let err = reprojector(epsg).check_area_of_use(xyz).unwrap_err();
+            assert!(matches!(err, CrsError::Reproject(_)), "EPSG:{epsg} {err:?}");
+        }
+    }
 }
