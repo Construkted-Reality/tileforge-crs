@@ -50,6 +50,7 @@
 
 mod area_of_use;
 mod area_of_use_table;
+mod catalogue;
 mod crs_hint;
 mod enu;
 mod error;
