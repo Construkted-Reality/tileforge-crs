@@ -57,7 +57,9 @@ revision, not by version, so a version bump here does not by itself break them.
   A zero `TOWGS84` on a CRS on any other ellipsoid or on another sphere, on a
   NAD27 CRS or on a code outside the catalogue is an error, because a zero
   shift cannot be confirmed for it. A `TOWGS84` with a non-zero value stays
-  refused.
+  refused. A GRS80 or WGS 84 based CRS that gets a Helmert shift from the
+  datum shift table (for example EPSG:2100, GGRS87) is refused too: a zero
+  clause contradicts the shift.
 - `crs-definitions` 0.4 is now a direct dependency (it was already a
   dependency of `proj4rs`; the version and features are the same).
 - The WKT scanner rejects a `[` outside a quoted string that does not open the

@@ -2,15 +2,17 @@
 // ABOUTME: Tells whether a zero-valued WKT TOWGS84 clause is acceptable for a code.
 //! Facts about catalogue definitions that the parser needs.
 
+use crate::datum_shift::{DatumShiftRule, datum_shift_rule};
+
 /// `true` when a zero-valued WKT `TOWGS84` clause is accepted for the CRS
 /// `epsg`: the catalogue definition names the WGS 84 or NAD83 datum, carries
 /// a zero `+towgs84` or the null grid, or names only the GRS80 or WGS 84
 /// ellipsoid.
 ///
 /// For these definitions `Reprojector` applies no datum shift, so the clause
-/// changes nothing in the output. A few datums in this set are in fact
-/// offset from WGS 84 (GGRS87, VN-2000, Israel 1993); the crate does not
-/// shift them either, with or without the clause.
+/// changes nothing in the output. A GRS80 or WGS 84 based CRS that gets a
+/// Helmert shift from the datum shift table (GGRS87, VN-2000, Israel 1993)
+/// is not in this set: a zero clause contradicts the shift.
 ///
 /// `false` for a definition on any other ellipsoid or on a sphere without
 /// the null grid, for a grid-based datum such as NAD27, and for a code that
@@ -21,6 +23,9 @@ pub(crate) fn accepts_zero_towgs84(epsg: u16) -> bool {
     let Some(definition) = crs_definitions::from_code(epsg) else {
         return false;
     };
+    if datum_shift_rule(epsg) != DatumShiftRule::NotNeeded {
+        return false;
+    }
     let value = |key: &str| {
         definition
             .proj4
@@ -76,8 +81,11 @@ mod tests {
             assert!(accepts_zero_towgs84(epsg), "EPSG:{epsg}");
         }
         // Airy (OSGB36), IAG 1975 (Xian 1980), NAD27 grids, Bessel, spheres
-        // (EPSG:2163, 3408, 4047), not in the catalogue.
-        for epsg in [27700_u16, 2327, 26717, 28992, 2163, 3408, 4047, 60000, 0] {
+        // (EPSG:2163, 3408, 4047), GRS80 or WGS 84 based CRSs that get a
+        // Helmert shift (GGRS87, Israel 1993, VN-2000), not in the catalogue.
+        for epsg in [
+            27700_u16, 2327, 26717, 28992, 2163, 3408, 4047, 2100, 2039, 3405, 60000, 0,
+        ] {
             assert!(!accepts_zero_towgs84(epsg), "EPSG:{epsg}");
         }
     }
