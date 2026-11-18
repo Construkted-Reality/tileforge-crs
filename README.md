@@ -36,8 +36,9 @@ A release here changes nothing downstream until a consumer moves its pin.
   a pole. Call `Reprojector::check_area_of_use` once with the dataset centre. It returns a
   warning from 1 to 20 degrees of arc outside the EPSG area of use and an error beyond
   20 degrees. It cannot detect a wrong CRS whose coordinates fall inside the area (a
-  neighbouring UTM zone, the other UTM hemisphere). Two wrong-unit cases give only the
-  warning: Web Mercator (EPSG:3857) coordinates that invert to a pole are at most
+  neighbouring UTM zone, the other UTM hemisphere). Some wrong-unit cases give only the
+  warning. Feet read as metres, and metres read as feet, usually land 2 to 16 degrees
+  outside. Web Mercator (EPSG:3857) coordinates that invert to a pole are at most
   4.94 degrees outside, and Swiss LV95 (EPSG:2056) millimetres read as metres land
   2.7 degrees outside. A consumer that needs a refusal there must add its own rule.
 
