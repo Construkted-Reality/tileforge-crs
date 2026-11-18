@@ -4,11 +4,26 @@
 """Generate `src/datum_shift_table.rs` and `tests/fixtures/datum-shift-reference.txt`.
 
 The catalogue that proj4rs reads (crs-definitions) carries no datum shift. A
-definition that names only an ellipsoid, and whose ellipsoid is not GRS80 or
-WGS 84, therefore needs a shift from another source. This tool asks PROJ which
-coordinate operation it uses for each such CRS over the whole EPSG area of use
-of that CRS, and keeps the first operation that is a static Helmert
-transformation (3 or 7 parameters) or a plain change of ellipsoid.
+definition that names only an ellipsoid therefore needs its shift from another
+source. This tool asks PROJ which coordinate operations it has for each such
+CRS, ranked for the EPSG area of use of that CRS, and keeps the first one in
+that ranking that is a static Helmert transformation (3 or 7 parameters) or a
+plain change of ellipsoid. PROJ ranks an operation that covers only a part of
+the area too, so the published accuracy holds inside the area of the operation.
+
+Two classes of definition are treated differently:
+
+- Ellipsoid other than GRS80 or WGS 84: the datum is tens to hundreds of
+  metres from WGS 84. The CRS gets the shift, or goes on the refusal list.
+- GRS80 or WGS 84 ellipsoid: most such datums (NAD83, ETRS89, GDA94 and so
+  on) are within about 2 m of WGS 84, which is the accuracy that EPSG gives
+  the WGS 84 datum ensemble itself. The CRS gets a shift only when the shift
+  moves the position by more than `MIN_SHIFT_M`. It is never refused for lack
+  of one.
+
+A definition on a sphere has no geodetic datum (EPSG calls it "not
+specified"). PROJ treats its latitude and longitude as WGS 84 values, and so
+does this crate: such a definition gets no shift and no refusal.
 
 A CRS for which PROJ has no such operation goes on the refusal list. So does
 every CRS in `tools/datum-shift-exclusions.txt`: PROJ has an operation for
@@ -39,6 +54,9 @@ WGS84_A = 6378137.0
 WGS84_ES = 0.0066943799901413165
 # proj4rs treats an ellipsoid as WGS 84 when `a` is equal and `es` is this close.
 ES_TOLERANCE = 0.000000000050
+# A CRS on GRS80 or WGS 84 gets a shift only above this displacement in metres.
+MIN_SHIFT_M = 5.0
+ARCSEC = math.pi / 648000.0
 
 DEF_LINE = re.compile(r'^EPSG_(\d+)\|(\d+)\|"([^"]*)"\|')
 
@@ -81,14 +99,37 @@ def is_wgs84_ellipsoid(params):
     return a == WGS84_A and abs(es - WGS84_ES) < ES_TOLERANCE
 
 
-def needs_datum_shift(proj4):
-    """True when proj4rs builds this definition with no datum and a foreign ellipsoid."""
+def is_sphere(params):
+    if "R" in params or params.get("ellps") == "sphere":
+        return True
+    return "a" in params and "b" in params and float(params["a"]) == float(params["b"])
+
+
+def shift_class(proj4):
+    """Return "foreign", "wgs84" or None for a catalogue definition.
+
+    None: proj4rs builds the definition with its own datum, or it has no
+    projection, or its ellipsoid is a sphere. "wgs84": no datum, GRS80 or
+    WGS 84 ellipsoid. "foreign": no datum, any other ellipsoid.
+    """
     params = proj_params(proj4)
     if "proj" not in params:
-        return False
+        return None
     if "towgs84" in params or "datum" in params or "nadgrids" in params:
-        return False
-    return not is_wgs84_ellipsoid(params)
+        return None
+    if is_sphere(params):
+        return None
+    return "wgs84" if is_wgs84_ellipsoid(params) else "foreign"
+
+
+def helmert_displacement(params, ecef):
+    """Length in metres of the Helmert shift `params` at the position `ecef`."""
+    tx, ty, tz, rx, ry, rz, ds = params
+    rx, ry, rz, scale = rx * ARCSEC, ry * ARCSEC, rz * ARCSEC, ds * 1.0e-6
+    x, y, z = ecef
+    return math.hypot(tx + scale * x - rz * y + ry * z,
+                      ty + rz * x + scale * y - rx * z,
+                      tz - ry * x + rx * y + scale * z)
 
 
 def split_steps(definition):
@@ -251,8 +292,9 @@ def select_operation(code):
         if not samples:
             continue
         accuracy = transformer.accuracy if transformer.accuracy >= 0 else None
+        shift_m = max(helmert_displacement(params, ecef) for _, ecef in samples)
         return None, {"params": params, "name": ident[0], "op": ident[1],
-                      "accuracy": accuracy, "samples": samples}
+                      "accuracy": accuracy, "samples": samples, "shift_m": shift_m}
     return "PROJ has no static Helmert transformation to WGS 84 for the area of use", None
 
 
@@ -278,8 +320,9 @@ def main():
         sys.exit("PROJ network is on; turn it off so that no grid is used")
     catalogue = read_catalogue(defs_path)
     exclusions = read_exclusions(Path(__file__).with_name("datum-shift-exclusions.txt"))
-    affected = sorted(code for code, proj4 in catalogue.items() if needs_datum_shift(proj4))
-    with multiprocessing.Pool(4) as pool:
+    classes = {code: shift_class(proj4) for code, proj4 in catalogue.items()}
+    affected = sorted(code for code, cls in classes.items() if cls is not None)
+    with multiprocessing.Pool(6) as pool:
         selected = pool.map(select_operation, affected, chunksize=16)
 
     operations = {}  # (op code, params) -> record
@@ -287,7 +330,14 @@ def main():
     refused = []
     reasons = {}
     fixture = []
+    small = 0
+    largest_small = 0.0
     for code, (reason, record) in zip(affected, selected):
+        if classes[code] == "wgs84" and (record is None or record["shift_m"] <= MIN_SHIFT_M):
+            small += 1
+            if record is not None:
+                largest_small = max(largest_small, record["shift_m"])
+            continue
         if record is not None and code in exclusions:
             reason, record = "excluded: " + exclusions[code], None
         if record is None:
@@ -315,7 +365,7 @@ def main():
     out.append("//! metres, rotations in arc-seconds, scale difference in parts per million.")
     out.append("//! `CRS_OPERATIONS` maps a CRS code to an index into `OPERATIONS` and is sorted")
     out.append("//! by CRS code. `CRS_WITHOUT_SHIFT` lists the CRS codes that need a datum shift")
-    out.append("//! for which PROJ has no static Helmert transformation; it is sorted too.")
+    out.append("//! and have no verified static Helmert transformation; it is sorted too.")
     out.append("")
     out.append("use crate::datum_shift::DatumShift;")
     out.append("")
@@ -360,7 +410,11 @@ def main():
         "\n".join(fixture_header + fixture) + "\n", encoding="utf-8")
 
     print(header)
-    print(f"definitions that need a datum shift: {len(affected)}")
+    foreign = sum(1 for c in affected if classes[c] == "foreign")
+    print(f"definitions without a datum: {len(affected)} "
+          f"({foreign} on a foreign ellipsoid, {len(affected) - foreign} on GRS80 or WGS 84)")
+    print(f"  GRS80 or WGS 84 with no shift above {MIN_SHIFT_M} m (unchanged): {small}; "
+          f"largest such shift {largest_small:.2f} m")
     print(f"  with a Helmert shift: {len(crs_operation)} ({len(keys)} distinct operations)")
     print(f"  refused: {len(refused)}")
     for reason, count in sorted(reasons.items()):

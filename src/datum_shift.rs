@@ -3,16 +3,26 @@
 //! Datum shifts for catalogue definitions that carry no datum.
 //!
 //! The proj4 catalogue (`crs-definitions`) describes many CRSs by projection
-//! and ellipsoid only. For a GRS80 or WGS 84 ellipsoid that is correct to the
-//! metre. For any other ellipsoid (Airy, Bessel, International 1924,
-//! Krassowsky and so on) the datum is offset from WGS 84 by tens to hundreds
-//! of metres, and the catalogue does not say by how much.
+//! and ellipsoid only, and it carries no datum shift.
 //!
-//! This module supplies the missing shift from a generated table of EPSG
-//! Helmert transformations (`datum_shift_table`). Each affected CRS code maps
-//! to the operation that PROJ ranks first, without grid files, over the whole
-//! EPSG area of use of that CRS. A CRS that needs a shift and has no such
-//! operation is refused: its position on WGS 84 cannot be derived.
+//! - For an ellipsoid other than GRS80 or WGS 84 (Airy, Bessel,
+//!   International 1924, Krassowsky and so on) the datum is offset from
+//!   WGS 84 by tens to hundreds of metres.
+//! - For a GRS80 or WGS 84 ellipsoid the datum is usually within about 2 m
+//!   of WGS 84 (NAD83, ETRS89, GDA94). A few are not: GGRS87 (Greece) is
+//!   326 m away, VN-2000 (Vietnam) 225 m, Israel 1993 78 m.
+//!
+//! This module supplies the missing shift from a generated table of Helmert
+//! transformations (`datum_shift_table`). Each CRS in the table maps to the
+//! first static Helmert operation in the ranking that PROJ makes, without
+//! grid files, for the EPSG area of use of that CRS. PROJ also ranks an
+//! operation that covers only a part of that area.
+//!
+//! A CRS on a foreign ellipsoid that has no verified operation is refused:
+//! its position on WGS 84 cannot be derived. A CRS on GRS80 or WGS 84 is in
+//! the table only when the shift is larger than 5 m, and it is never refused.
+//! A definition on a sphere has no geodetic datum; its coordinates are read
+//! as WGS 84 values, as PROJ does.
 
 use crate::datum_shift_table::{CRS_OPERATIONS, CRS_WITHOUT_SHIFT, OPERATIONS};
 
@@ -28,13 +38,16 @@ use crate::datum_shift_table::{CRS_OPERATIONS, CRS_WITHOUT_SHIFT, OPERATIONS};
 pub struct DatumShift {
     /// Identifier of the coordinate operation, for example `"EPSG:1314"`.
     /// Two published operations that combine into one Helmert shift are
-    /// joined with `+`, for example `"EPSG:5826+EPSG:1149"`.
+    /// joined with `+`, for example `"EPSG:5826+EPSG:1149"`. A few operations
+    /// come from another registry in the PROJ database, for example `IGNF:`.
     pub operation_id: &'static str,
     /// Name of the coordinate operation, for example
     /// `"OSGB36 to WGS 84 (6)"`.
     pub operation_name: &'static str,
-    /// Accuracy in metres that EPSG publishes for the operation, or `None`
-    /// when EPSG states none.
+    /// Accuracy in metres that the registry publishes for the operation, or
+    /// `None` when it states none. For two combined operations it is the sum
+    /// of both. It holds inside the area of the operation, which can be
+    /// smaller than the area of use of the CRS.
     pub accuracy_m: Option<f64>,
     /// The seven parameters in the Position Vector convention of a proj4
     /// `+towgs84` clause: `[tx, ty, tz, rx, ry, rz, ds]` with translations in
@@ -142,13 +155,13 @@ fn prime_meridian_deg(pm: &str) -> Option<f64> {
 /// What the catalogue definition of a CRS needs to reach WGS 84.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum DatumShiftRule {
-    /// The catalogue definition is complete: it is on GRS80 or WGS 84, or it
-    /// names its own datum.
+    /// The catalogue definition is used as it is: it names its own datum, it
+    /// is on a sphere, or it is on GRS80 or WGS 84 with no shift above 5 m.
     NotNeeded,
     /// The definition needs this Helmert shift.
     Helmert(&'static DatumShift),
-    /// The definition needs a shift and no static Helmert transformation to
-    /// WGS 84 is published for it.
+    /// The definition needs a shift and no verified static Helmert
+    /// transformation to WGS 84 is available for it.
     Unavailable,
 }
 
@@ -167,42 +180,60 @@ pub(crate) fn datum_shift_rule(epsg: u16) -> DatumShiftRule {
 mod tests {
     use super::*;
 
-    /// `true` when proj4rs builds `proj4` with no datum on an ellipsoid that
-    /// is not GRS80 or WGS 84. Mirrors `needs_datum_shift` in
-    /// `tools/gen_datum_shifts.py`.
-    fn needs_datum_shift(proj4: &str) -> bool {
+    #[derive(Debug, PartialEq)]
+    enum ShiftClass {
+        /// proj4rs builds the definition with its own datum, it has no
+        /// projection, or it is on a sphere.
+        None,
+        /// No datum, GRS80 or WGS 84 ellipsoid.
+        Wgs84,
+        /// No datum, any other ellipsoid.
+        Foreign,
+    }
+
+    /// Mirrors `shift_class` in `tools/gen_datum_shifts.py`.
+    fn shift_class(proj4: &str) -> ShiftClass {
         let value = |key: &str| {
             proj4
                 .split_whitespace()
                 .find_map(|t| t.strip_prefix('+')?.strip_prefix(key)?.strip_prefix('='))
         };
-        if value("proj").is_none() {
-            return false;
-        }
-        if ["towgs84", "datum", "nadgrids"]
-            .iter()
-            .any(|k| value(k).is_some())
+        let number = |key: &str| value(key).and_then(|v| v.parse::<f64>().ok());
+        if value("proj").is_none()
+            || ["towgs84", "datum", "nadgrids"]
+                .iter()
+                .any(|k| value(k).is_some())
         {
-            return false;
+            return ShiftClass::None;
         }
-        match value("ellps") {
-            Some("GRS80" | "WGS84") => false,
-            Some(_) => true,
-            None => {
-                let Some(a) = value("a").and_then(|v| v.parse::<f64>().ok()) else {
-                    return true;
-                };
-                let es = if let Some(rf) = value("rf").and_then(|v| v.parse::<f64>().ok()) {
+        let sphere = value("R").is_some()
+            || value("ellps") == Some("sphere")
+            || matches!((number("a"), number("b")), (Some(a), Some(b)) if a == b);
+        if sphere {
+            return ShiftClass::None;
+        }
+        let wgs84 = match value("ellps") {
+            Some("GRS80" | "WGS84") => true,
+            Some(_) => false,
+            None => match (number("a"), number("rf"), number("b")) {
+                (Some(a), Some(rf), _) => {
                     let f = 1.0 / rf;
-                    f * (2.0 - f)
-                } else if let Some(b) = value("b").and_then(|v| v.parse::<f64>().ok()) {
-                    1.0 - (b * b) / (a * a)
-                } else {
-                    return true;
-                };
-                !(a == 6_378_137.0 && (es - 0.006_694_379_990_141_316_5).abs() < 0.000_000_000_050)
-            }
+                    is_wgs84(a, f * (2.0 - f))
+                }
+                (Some(a), None, Some(b)) => is_wgs84(a, 1.0 - (b * b) / (a * a)),
+                _ => false,
+            },
+        };
+        if wgs84 {
+            ShiftClass::Wgs84
+        } else {
+            ShiftClass::Foreign
         }
+    }
+
+    /// The test that proj4rs uses to treat an ellipsoid as WGS 84.
+    fn is_wgs84(a: f64, es: f64) -> bool {
+        a == 6_378_137.0 && (es - 0.006_694_379_990_141_316_5).abs() < 0.000_000_000_050
     }
 
     #[test]
@@ -217,44 +248,53 @@ mod tests {
     }
 
     #[test]
-    fn every_catalogue_definition_that_needs_a_shift_has_a_rule() {
-        // Guards the generated table against a catalogue upgrade: a definition
-        // that needs a shift must be in exactly one of the two lists, and a
-        // definition that needs none must be in neither.
+    fn every_catalogue_definition_has_the_rule_of_its_class() {
+        // Guards the generated table against a catalogue upgrade. A definition
+        // on a foreign ellipsoid must be in exactly one of the two lists. A
+        // definition on GRS80 or WGS 84 can be in the table. Every other
+        // definition must be in neither list.
         let mut shifted = 0;
         let mut refused = 0;
         for code in 0..=u16::MAX {
-            let Some(def) = crs_definitions::from_code(code) else {
-                assert_eq!(
-                    datum_shift_rule(code),
-                    DatumShiftRule::NotNeeded,
-                    "EPSG:{code} is not in the catalogue but has a rule"
-                );
-                continue;
-            };
             let rule = datum_shift_rule(code);
-            if needs_datum_shift(def.proj4) {
-                match rule {
-                    DatumShiftRule::Helmert(_) => shifted += 1,
-                    DatumShiftRule::Unavailable => refused += 1,
-                    DatumShiftRule::NotNeeded => {
-                        panic!(
-                            "EPSG:{code} needs a datum shift and has no rule: {}",
-                            def.proj4
-                        )
-                    }
-                }
-            } else {
-                assert_eq!(
+            let class = crs_definitions::from_code(code)
+                .map_or(ShiftClass::None, |def| shift_class(def.proj4));
+            match rule {
+                DatumShiftRule::Helmert(_) => shifted += 1,
+                DatumShiftRule::Unavailable => refused += 1,
+                DatumShiftRule::NotNeeded => {}
+            }
+            match class {
+                ShiftClass::Foreign => assert_ne!(
                     rule,
                     DatumShiftRule::NotNeeded,
-                    "EPSG:{code} needs no datum shift but has a rule: {}",
-                    def.proj4
-                );
+                    "EPSG:{code} is on a foreign ellipsoid and has no rule"
+                ),
+                ShiftClass::Wgs84 => {}
+                ShiftClass::None => assert_eq!(
+                    rule,
+                    DatumShiftRule::NotNeeded,
+                    "EPSG:{code} needs no datum shift but has a rule"
+                ),
             }
         }
         assert_eq!(shifted, CRS_OPERATIONS.len());
         assert_eq!(refused, CRS_WITHOUT_SHIFT.len());
+    }
+
+    #[test]
+    fn reference_fixture_covers_every_crs_in_the_table() {
+        // `tests/datum_shift_parity.rs` proves a CRS only if the fixture has
+        // rows for it.
+        let fixture = include_str!("../tests/fixtures/datum-shift-reference.txt");
+        let mut in_fixture: Vec<u16> = fixture
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+            .map(|line| line.split_whitespace().next().unwrap().parse().unwrap())
+            .collect();
+        in_fixture.dedup();
+        let in_table: Vec<u16> = CRS_OPERATIONS.iter().map(|&(code, _)| code).collect();
+        assert_eq!(in_fixture, in_table);
     }
 
     fn shift_for(epsg: u16) -> &'static DatumShift {

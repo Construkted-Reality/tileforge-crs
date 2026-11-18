@@ -31,13 +31,19 @@ A release here changes nothing downstream until a consumer moves its pin.
   A sidecar that declares a sentinel is a valid "no CRS" declaration, so
   `detect_crs_from_sidecar` returns it and leaves the policy to the caller.
 - Vertical-datum policy belongs to the consumer. The parser only reports `vertical_stripped`.
-- A source CRS on an ellipsoid other than GRS80 or WGS 84 (OSGB36, Amersfoort, CH1903,
-  DHDN, MGI, ED50 and so on) gets a Helmert datum shift to WGS 84. `Reprojector::datum_shift`
-  reports the operation and its published accuracy, typically 1 m to 10 m. A consumer
-  should pass that on as a warning. The shift moves the horizontal position only.
-  Height passes through as a height above the WGS 84 ellipsoid.
-- `Reprojector::new` fails with `CrsError::DatumShiftUnavailable` for a CRS that needs
-  a datum shift when EPSG publishes no static Helmert transformation for it.
+- A source CRS whose datum is offset from WGS 84 gets a Helmert datum shift: every CRS on
+  an ellipsoid other than GRS80 or WGS 84 (OSGB36, Amersfoort, CH1903, DHDN, MGI, ED50
+  and so on), and the few GRS80 or WGS 84 based datums that are more than 5 m from
+  WGS 84 (GGRS87, VN-2000, Israel 1993). `Reprojector::datum_shift` reports the operation
+  and its published accuracy, typically 1 m to 10 m. A consumer should pass that on as a
+  warning. The shift moves the horizontal position only. Height passes through as a
+  height above the WGS 84 ellipsoid.
+- Other GRS80 or WGS 84 based datums (NAD83, ETRS89, GDA94 and so on) get no shift. They
+  are within about 2 m of WGS 84.
+- `Reprojector::new` fails with `CrsError::DatumShiftUnavailable` for a CRS on a foreign
+  ellipsoid when no verified static Helmert transformation is available: the PROJ
+  database has none, or `proj4rs` cannot reproduce the PROJ position
+  (`tools/datum-shift-exclusions.txt`).
 
 The rustdoc in `src/lib.rs` is the full API reference.
 
@@ -60,10 +66,12 @@ on a machine that has PROJ installed.
 To regenerate them, for example after an upgrade of `crs-definitions`:
 
 ```sh
-python3 -m venv venv && venv/bin/pip install pyproj
-venv/bin/python tools/gen_datum_shifts.py \
-    ~/.cargo/registry/src/*/crs-definitions-0.4.0/src/defs.rs .
+python3 -m venv venv && venv/bin/pip install pyproj==3.8.0
+venv/bin/python tools/gen_datum_shifts.py <path to crs-definitions-0.4.0>/src/defs.rs .
 ```
+
+The crate source is under `~/.cargo/registry/src/`. Name one directory, not a shell
+pattern. `pyproj` 3.8.0 bundles PROJ 9.8.1; another version can rank operations differently.
 
 The tool needs no system PROJ: the `pyproj` wheel bundles PROJ and the EPSG database.
 Keep the PROJ network off and install no grid files, so that PROJ ranks only operations
@@ -81,8 +89,11 @@ that get no datum shift are not restated; see the open items in
 
 Limits. A Helmert transformation is an approximation. Where a national grid file exists
 (OSTN15, BETA2007 and so on) the Helmert position differs from the grid position by
-decimetres to a few metres. The table holds one operation per CRS, selected for the whole
-area of use. PROJ can select a more local operation for a small area.
+decimetres to a few metres. The table holds one operation per CRS: the first static Helmert
+operation in the ranking that PROJ makes for the area of use of the CRS. That operation
+can cover only a part of the area, and its published accuracy holds only there. PROJ can
+select a more local operation for a small area, and for some CRSs it ranks an operation of
+another kind (Molodensky-Badekas, two steps) first.
 
 ## Documentation
 

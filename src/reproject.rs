@@ -8,8 +8,8 @@
 //! resolved through proj4rs's `crs-definitions` feature, which carries
 //! the proj4 EPSG catalogue.
 //!
-//! The catalogue carries no datum shift. A source CRS on an ellipsoid other
-//! than GRS80 or WGS 84 gets its shift to WGS 84 from the Helmert table in
+//! The catalogue carries no datum shift. A source CRS whose datum is offset
+//! from WGS 84 gets its shift from the Helmert table in
 //! [`crate::datum_shift`], or is refused when the table has none.
 
 use proj4rs::Proj;
@@ -63,8 +63,8 @@ impl std::fmt::Debug for Reprojector {
 impl Reprojector {
     /// Build a reprojector for `source → EPSG:4978`.
     ///
-    /// A source CRS whose catalogue definition names only an ellipsoid other
-    /// than GRS80 or WGS 84 gets the Helmert datum shift that
+    /// A source CRS whose catalogue definition names only an ellipsoid, and
+    /// whose datum is offset from WGS 84, gets the Helmert datum shift that
     /// [`Reprojector::datum_shift`] reports.
     ///
     /// # Errors
@@ -72,10 +72,11 @@ impl Reprojector {
     /// - [`CrsError::UnknownEpsg`] if the source EPSG isn't in the proj4
     ///   catalogue.
     /// - [`CrsError::DatumShiftUnavailable`] if the source CRS needs a datum
-    ///   shift and no static Helmert transformation to WGS 84 is published for
-    ///   it. Its position on WGS 84 cannot be derived, so the reprojector
-    ///   refuses the CRS instead of placing the data tens to hundreds of
-    ///   metres away.
+    ///   shift and no verified static Helmert transformation to WGS 84 is
+    ///   available: the PROJ database has none, or proj4rs cannot reproduce
+    ///   the PROJ position from the catalogue definition. The position on
+    ///   WGS 84 cannot be derived, so the reprojector refuses the CRS instead
+    ///   of placing the data tens to hundreds of metres away.
     pub fn new(source: SourceCrs) -> Result<Self, CrsError> {
         let unknown = |e: proj4rs::errors::Error| {
             CrsError::unknown_epsg(format!(
