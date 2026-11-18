@@ -10,6 +10,38 @@ revision, not by version, so a version bump here does not by itself break them.
 
 ## [Unreleased]
 
+### Fixed
+- **Apply the datum shift for source CRSs on an ellipsoid other than GRS80 or
+  WGS 84.** The proj4 catalogue carries no datum shift, so `Reprojector`
+  placed the latitude and longitude of such a CRS directly on the WGS 84
+  ellipsoid. The position was wrong by the offset of the datum: 83 m to
+  166 m for the British, Dutch, Swiss, German, Austrian, Belgian and ED50
+  national grids, with a median of 111 m over all affected CRSs. `Reprojector`
+  now applies the EPSG Helmert transformation that PROJ ranks first, without
+  grid files, over the area of use of the CRS. This changes the output for
+  1,954 catalogue CRSs and for no other CRS. Every one of them agrees with
+  PROJ 9.8.1 to 10 µm on the reference fixture.
+- For the same 1,954 CRSs, restate what `proj4rs` 0.1.10 misreads in a
+  catalogue definition: the `+k_0=` scale factor (ignored), an ellipsoid
+  given by its minor axis (wrong flattening in the Transverse Mercator
+  series), and a `+pm=` prime meridian (degrees added as radians).
+
+### Added
+- `Reprojector::datum_shift` and `DatumShift` report the Helmert operation
+  that a reprojector applies (identifier, name, published accuracy,
+  parameters), so that a consumer can warn the user.
+- `CrsError::DatumShiftUnavailable(u16)`: `Reprojector::new` refuses a source
+  CRS that needs a datum shift when no verified Helmert transformation to
+  WGS 84 is available for it (540 catalogue CRSs that `Reprojector::new`
+  accepted before, for example Xian 1980 and New Beijing).
+  `is_supported_epsg` returns `false` for these codes.
+- `tools/gen_datum_shifts.py` generates `src/datum_shift_table.rs` and the
+  PROJ reference fixture `tests/fixtures/datum-shift-reference.txt`.
+
+### Changed
+- `crs-definitions` 0.4 is now a direct dependency (it was already a
+  dependency of `proj4rs`; the version and features are the same).
+
 ## [0.3.0] - 2026-09-30 - Expose coordinate units and reject unsupported operations
 
 This release exposes horizontal and vertical coordinate units separately. It rejects explicit datum operations that the converter cannot preserve and rejects reserved GeoTIFF sentinel codes.
