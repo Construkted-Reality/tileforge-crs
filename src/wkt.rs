@@ -382,7 +382,10 @@ fn parse_epsg_authority_in_body(body: &str) -> Result<u16, CrsError> {
 /// trailing args (e.g. `…,VERSION[...]` / `…,URI[...]`) by reading only
 /// the first two.
 fn split_authority_args(inner: &str) -> Result<(&str, &str), CrsError> {
-    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+    let parts: Vec<&str> = split_outside_quotes(inner)
+        .into_iter()
+        .map(str::trim)
+        .collect();
     if parts.len() < 2 {
         return Err(CrsError::parse(format!(
             "AUTHORITY/ID clause must have at least two arguments, got {} ({:?})",
@@ -394,6 +397,27 @@ fn split_authority_args(inner: &str) -> Result<(&str, &str), CrsError> {
     // WKT1 quotes the code; WKT2 leaves it bare. Accept either.
     let code_str = strip_quotes_opt(parts[1]);
     Ok((authority, code_str))
+}
+
+/// Split `text` at each comma that is outside a quoted string. A quoted
+/// string can hold a comma and the `""` escape.
+fn split_outside_quotes(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut in_string = false;
+    for (i, c) in text.char_indices() {
+        match c {
+            // A `""` escape toggles twice, which leaves the state unchanged.
+            '"' => in_string = !in_string,
+            ',' if !in_string => {
+                parts.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
 }
 
 /// Parse the code text of an EPSG `AUTHORITY`/`ID` clause.
@@ -652,6 +676,14 @@ mod tests {
         ] {
             assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 3857, "{wkt}");
         }
+    }
+
+    #[test]
+    fn comma_inside_a_quoted_authority_name_does_not_split_the_clause() {
+        let wkt = r#"PROJCRS["x",ID["EPSG",32617],ID["Some, Org",7]]"#;
+        assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 32617);
+        let wkt = r#"PROJCS["x",AUTHORITY["Some ""quoted"", Org","7"],AUTHORITY["EPSG","32617"]]"#;
+        assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 32617);
     }
 
     #[test]

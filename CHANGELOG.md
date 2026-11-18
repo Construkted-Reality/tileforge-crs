@@ -19,7 +19,8 @@ revision, not by version, so a version bump here does not by itself break them.
   when ASCII whitespace and a `[` followed.
 - The WKT scanner rejects `(` and `)` outside a quoted string. It supports
   square-bracket delimiters only. Quoted names that contain parentheses still
-  parse.
+  parse. The rule covers the whole string, so text with a parenthesis after
+  the root block also fails.
 - The WKT scanner reads every depth-0 `AUTHORITY`/`ID` clause of a block, not only
   the first one. Two EPSG clauses with different codes are an error; a repeated
   code is accepted. When an EPSG clause exists, clauses of other authorities are
