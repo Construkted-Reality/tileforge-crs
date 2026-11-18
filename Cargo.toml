@@ -12,6 +12,10 @@ description = "Error-agnostic CRS core (proj4rs → EPSG:4978 reprojection, WKT/
 # pulls in the proj4-EPSG catalogue so `Proj::from_epsg_code(u16)` works.
 # Version pinned to match tileforge-pc's workspace.
 proj4rs = { version = "0.1.10", features = ["crs-definitions"] }
+# The same catalogue that proj4rs reads, as a direct dependency: the datum
+# shift code appends a `+towgs84` clause to a catalogue definition. Same
+# version and features as proj4rs selects, so one copy is compiled.
+crs-definitions = { version = "0.4", default-features = false, features = ["proj4"] }
 thiserror = "2"
 
 # NOTE: the parity oracle compares Reprojector output to FROZEN PROJ

@@ -49,6 +49,8 @@
 //! `tileforge-pc-crs`, which re-exports this crate's surface.
 
 mod crs_hint;
+mod datum_shift;
+mod datum_shift_table;
 mod enu;
 mod error;
 mod reproject;
@@ -57,6 +59,7 @@ mod source_crs;
 mod wkt;
 
 pub use crs_hint::{CrsHint, CrsResolution};
+pub use datum_shift::DatumShift;
 pub use enu::{EnuFrame, ecef_to_geodetic_lonlat};
 pub use error::CrsError;
 pub use reproject::{Reprojector, is_geographic_epsg, is_geotiff_sentinel, is_supported_epsg};
