@@ -206,6 +206,7 @@ fn bound_vertical_crs_at_the_root_is_an_error() {
     assert!(msg.contains("horizontal or compound"), "{msg}");
     assert!(parse_crs_string(&wkt).is_err());
 }
+
 #[test]
 fn bracket_that_opens_no_identifier_block_is_rejected() {
     for wkt in [
@@ -240,4 +241,38 @@ fn bracket_that_closes_no_block_is_rejected() {
 fn quoted_brackets_are_not_blocks() {
     let wkt = r#"PROJCS["[x], ""[y]"" ]",AUTHORITY["EPSG","32617"]]"#;
     assert_eq!(extract_epsg_from_wkt(wkt).unwrap().epsg, 32617);
+}
+
+#[test]
+fn bound_vertical_block_is_exempt_only_as_a_leg_of_a_compound_root() {
+    // The same block nested in a horizontal CRS is not a vertical leg, so
+    // the operation inside it must be refused.
+    let block = r#"BOUNDCRS[SOURCECRS[VERT_CS["v"]],TOWGS84[100,200,300]]"#;
+    let in_projcs = format!(
+        "PROJCS[\"p\",GEOGCS[\"g\",DATUM[\"d\",SPHEROID[\"s\",1,2],{block}],\
+         AUTHORITY[\"EPSG\",\"4267\"]],AUTHORITY[\"EPSG\",\"26717\"]]"
+    );
+    let in_compound_leg = format!(
+        "COMPOUNDCRS[\"c\",PROJCRS[\"p\",BASEGEOGCRS[\"g\",{block}],ID[\"EPSG\",26917]],\
+         VERTCRS[\"v\",ID[\"EPSG\",5703]]]"
+    );
+    for wkt in [in_projcs, in_compound_leg] {
+        let err = extract_epsg_from_wkt(&wkt).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("declares an explicit datum transformation"),
+            "{wkt}: {err}"
+        );
+    }
+}
+
+#[test]
+fn delimiter_and_bracket_rules_apply_inside_a_bound_vertical_leg() {
+    for inner in [r#"VERTCRS["v"],PARAMETER("x",1)"#, r#"VERTCRS["v"],["x"]"#] {
+        let wkt = format!(
+            "COMPOUNDCRS[\"c\",PROJCRS[\"p\",ID[\"EPSG\",26917]],\
+             BOUNDCRS[SOURCECRS[{inner}],TARGETCRS[GEOGCRS[\"g\"]]]]"
+        );
+        assert!(extract_epsg_from_wkt(&wkt).is_err(), "{wkt}");
+    }
 }

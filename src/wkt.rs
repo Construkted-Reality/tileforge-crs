@@ -171,8 +171,9 @@ const VERTICAL_KEYWORDS: &[&str] = &["VERT_CS", "VERTCRS", "VERTICALCRS"];
 ///   nested clauses as if they were at depth 0.
 ///
 /// One exception: a `BOUNDCRS[...]` block whose `SOURCECRS[...]` child
-/// holds a vertical CRS (see [`bound_crs_has_vertical_source`]) is not
-/// scanned for those identifiers. Its operation applies to heights only,
+/// holds a vertical CRS (see [`bound_crs_has_vertical_source`]), and which
+/// is a direct child of a `COMPD_CS`/`COMPOUNDCRS` root or the root itself,
+/// is not scanned for those identifiers. Its operation applies to heights only,
 /// and the scanner discards the vertical component of a compound CRS, so
 /// the operation is discarded with it. The delimiter and bracket rules
 /// still apply inside that block.
@@ -184,6 +185,8 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
     // exempt vertical `BOUNDCRS` block opened while the scan is inside it.
     let mut depth: usize = 0;
     let mut exempt_from: Option<usize> = None;
+    // Whether the root block is a compound CRS.
+    let mut root_is_compound = false;
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'"' {
@@ -224,7 +227,15 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
             i += 1;
         } else if let Some((id, end)) = read_identifier(bytes, i) {
             if exempt_from.is_none() {
-                if id.eq_ignore_ascii_case("BOUNDCRS") && bound_crs_has_vertical_source(wkt, end) {
+                // A vertical `BOUNDCRS` is exempt as a leg of a compound
+                // root, and as the root itself, which the caller then
+                // refuses with its own message. Nested anywhere else it is
+                // not a vertical leg.
+                let leg_position = depth == 0 || (depth == 1 && root_is_compound);
+                if leg_position
+                    && id.eq_ignore_ascii_case("BOUNDCRS")
+                    && bound_crs_has_vertical_source(wkt, end)
+                {
                     exempt_from = Some(depth);
                 } else if id.eq_ignore_ascii_case("BOUNDCRS") || id.eq_ignore_ascii_case("TOWGS84")
                 {
@@ -236,6 +247,10 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
             }
             let open = skip_whitespace(bytes, end);
             if bytes.get(open) == Some(&b'[') {
+                if depth == 0 {
+                    root_is_compound = id.eq_ignore_ascii_case("COMPD_CS")
+                        || id.eq_ignore_ascii_case("COMPOUNDCRS");
+                }
                 depth += 1;
                 i = open + 1;
             } else {

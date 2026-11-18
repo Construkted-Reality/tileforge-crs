@@ -16,8 +16,10 @@ revision, not by version, so a version bump here does not by itself break them.
   tools write a geoid model this way. The result is the horizontal EPSG code with
   `vertical_stripped = true`, as for a plain vertical leg; the operation of that
   leg is not read. A `BOUNDCRS` on a horizontal CRS, a `BOUNDCRS` without one
-  readable `SOURCECRS`, and `TOWGS84` outside that leg are still errors. A vertical
-  `BOUNDCRS` at the root is an error with its own message.
+  readable `SOURCECRS`, and `TOWGS84` outside that leg are still errors. So is a
+  vertical `BOUNDCRS` that is nested inside a horizontal CRS: only a direct child
+  of the compound root is a vertical leg. A vertical `BOUNDCRS` at the root is an
+  error with its own message.
 - `Reprojector::check_area_of_use` compares one source coordinate (the dataset
   centre) with the EPSG area of use of the source CRS. It returns
   `AreaOfUseCheck::Inside` within 1 degree of the area, `AreaOfUseCheck::Outside`
