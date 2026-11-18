@@ -18,7 +18,7 @@ use proj4rs::transform::transform;
 use crate::area_of_use::{
     AreaOfUse, AreaOfUseCheck, OutsideAreaOfUse, REFUSAL_MARGIN_DEG, TOLERANCE_DEG,
 };
-use crate::datum_shift::{DatumShift, DatumShiftRule, datum_shift_rule};
+use crate::datum_shift::{DatumShift, DatumShiftRule, datum_shift_rule, restated_definition};
 use crate::error::CrsError;
 use crate::source_crs::SourceCrs;
 
@@ -70,6 +70,10 @@ impl Reprojector {
     /// whose datum is offset from WGS 84, gets the Helmert datum shift that
     /// [`Reprojector::datum_shift`] reports.
     ///
+    /// Every catalogue definition is restated where proj4rs 0.1.10 misreads
+    /// it (see `restated_definition`), for example a scale factor written
+    /// as `+k_0=`.
+    ///
     /// # Errors
     ///
     /// - [`CrsError::UnknownEpsg`] if the source EPSG isn't in the proj4
@@ -97,7 +101,14 @@ impl Reprojector {
             ))
         })?;
         let datum_shift = match datum_shift_rule(source.epsg) {
-            DatumShiftRule::NotNeeded => None,
+            DatumShiftRule::NotNeeded => {
+                if let Some(restated) = crs_definitions::from_code(source.epsg)
+                    .and_then(|d| restated_definition(d.proj4))
+                {
+                    source_proj = Proj::from_proj_string(&restated).map_err(unknown)?;
+                }
+                None
+            }
             DatumShiftRule::Unavailable => {
                 return Err(CrsError::datum_shift_unavailable(source.epsg));
             }

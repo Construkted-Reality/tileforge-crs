@@ -73,53 +73,62 @@ impl DatumShift {
     }
 
     /// The catalogue definition `proj4` with this shift added, in the form
-    /// that proj4rs 0.1.10 reads correctly.
-    ///
-    /// proj4rs 0.1.10 misreads three things that catalogue definitions use,
-    /// and each one moves a position by metres to thousands of kilometres:
-    ///
-    /// - it ignores the scale factor `+k_0=` (it reads `+k=` only);
-    /// - it derives a wrong flattening for an ellipsoid given by its minor
-    ///   axis (`+b=`, and the named ellipsoids that it stores that way), which
-    ///   the Transverse Mercator series then use;
-    /// - it adds a named or numeric `+pm=` to the longitude in radians
-    ///   although the value is in degrees.
-    ///
-    /// The returned definition states the same CRS with `+k=`, with
-    /// `+a=`/`+rf=`, and with the prime meridian in radians.
+    /// that proj4rs 0.1.10 reads correctly (see [`restated_definition`]).
     pub(crate) fn definition_with_shift(&self, proj4: &str) -> String {
-        let value = |key: &str| {
-            proj4
-                .split_whitespace()
-                .find_map(|t| t.strip_prefix('+')?.strip_prefix(key)?.strip_prefix('='))
-        };
-        let semi_major = value("a").and_then(|v| v.parse::<f64>().ok());
-        let has_k = value("k").is_some();
-        let mut out = String::with_capacity(proj4.len() + 96);
-        for token in proj4.split_whitespace() {
-            let (key, val) = token
-                .strip_prefix('+')
-                .and_then(|t| t.split_once('='))
-                .unwrap_or(("", ""));
-            let rewritten = match key {
-                "k_0" if !has_k => Some(format!("+k={val}")),
-                "ellps" => MINOR_AXIS_ELLIPSOIDS
-                    .iter()
-                    .find(|(name, _, _)| *name == val)
-                    .map(|&(_, a, b)| format!("+a={a} +rf={}", a / (a - b))),
-                "b" => match (semi_major, val.parse::<f64>()) {
-                    (Some(a), Ok(b)) if b < a => Some(format!("+rf={}", a / (a - b))),
-                    _ => None,
-                },
-                "pm" => prime_meridian_deg(val).map(|deg| format!("+pm={}", deg.to_radians())),
-                _ => None,
-            };
-            out.push_str(rewritten.as_deref().unwrap_or(token));
-            out.push(' ');
-        }
+        let mut out = restated_definition(proj4).unwrap_or_else(|| proj4.to_string());
+        out.push(' ');
         out.push_str(&self.towgs84_clause());
         out
     }
+}
+
+/// The catalogue definition `proj4` restated in the form that proj4rs 0.1.10
+/// reads correctly, or `None` when proj4rs already reads it correctly.
+///
+/// proj4rs 0.1.10 misreads three things that catalogue definitions use,
+/// and each one moves a position by metres to thousands of kilometres:
+///
+/// - it ignores the scale factor `+k_0=` (it reads `+k=` only);
+/// - it derives a wrong flattening for an ellipsoid given by its minor
+///   axis (`+b=`, and the named ellipsoids that it stores that way), which
+///   the Transverse Mercator series then use;
+/// - it adds a named or numeric `+pm=` to the longitude in radians
+///   although the value is in degrees.
+///
+/// The restated definition states the same CRS with `+k=`, with
+/// `+a=`/`+rf=`, and with the prime meridian in radians.
+pub(crate) fn restated_definition(proj4: &str) -> Option<String> {
+    let value = |key: &str| {
+        proj4
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix('+')?.strip_prefix(key)?.strip_prefix('='))
+    };
+    let semi_major = value("a").and_then(|v| v.parse::<f64>().ok());
+    let has_k = value("k").is_some();
+    let mut changed = false;
+    let mut tokens = Vec::new();
+    for token in proj4.split_whitespace() {
+        let (key, val) = token
+            .strip_prefix('+')
+            .and_then(|t| t.split_once('='))
+            .unwrap_or(("", ""));
+        let rewritten = match key {
+            "k_0" if !has_k => Some(format!("+k={val}")),
+            "ellps" => MINOR_AXIS_ELLIPSOIDS
+                .iter()
+                .find(|(name, _, _)| *name == val)
+                .map(|&(_, a, b)| format!("+a={a} +rf={}", a / (a - b))),
+            "b" => match (semi_major, val.parse::<f64>()) {
+                (Some(a), Ok(b)) if b < a => Some(format!("+rf={}", a / (a - b))),
+                _ => None,
+            },
+            "pm" => prime_meridian_deg(val).map(|deg| format!("+pm={}", deg.to_radians())),
+            _ => None,
+        };
+        changed |= rewritten.is_some();
+        tokens.push(rewritten.unwrap_or_else(|| token.to_string()));
+    }
+    changed.then(|| tokens.join(" "))
 }
 
 /// Ellipsoids that proj4rs stores by semi-major and semi-minor axis, in
@@ -313,6 +322,27 @@ mod tests {
             DatumShiftRule::Helmert(shift) => shift,
             other => panic!("EPSG:{epsg} must have a Helmert shift, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn restated_definition_is_none_when_proj4rs_reads_the_definition() {
+        assert_eq!(
+            restated_definition("+proj=utm +zone=17 +datum=WGS84 +units=m +no_defs"),
+            None
+        );
+        // `+k=` takes precedence over `+k_0=` in proj4rs, so nothing changes.
+        assert_eq!(
+            restated_definition("+proj=tmerc +k=0.9996 +k_0=1 +ellps=GRS80"),
+            None
+        );
+    }
+
+    #[test]
+    fn restated_definition_moves_the_scale_factor_to_k() {
+        assert_eq!(
+            restated_definition("+proj=lcc +lat_1=47 +k_0=0.99927 +ellps=GRS80 +units=m"),
+            Some("+proj=lcc +lat_1=47 +k=0.99927 +ellps=GRS80 +units=m".to_string())
+        );
     }
 
     #[test]

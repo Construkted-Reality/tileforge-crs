@@ -116,6 +116,16 @@ revision, not by version, so a version bump here does not by itself break them.
   catalogue definition: the `+k_0=` scale factor (ignored), an ellipsoid
   given by its minor axis (wrong flattening in the Transverse Mercator
   series), and a `+pm=` prime meridian (degrees added as radians).
+- Restate the same three things for every catalogue CRS that gets no datum
+  shift. Of these, only definitions that write the scale factor as `+k_0=`
+  change: 176 CRSs (189 in the catalogue, 9 of which `proj4rs` cannot build),
+  mostly NAD83 low-distortion projections (Oregon, Montana RMTCRS, Wisconsin
+  WISCRS, Kansas KS RCS). At the centre of the area of use the old position
+  was up to 196 m from PROJ (EPSG:8325 and 8326, Oregon Mitchell zone),
+  39 CRSs more than 1 m, median 0.19 m. Every row of the new PROJ reference
+  fixture `tests/fixtures/restatement-reference.txt` (378 rows) now agrees to
+  10 µm. The output of every other catalogue CRS is bit-identical. Closes
+  issue #7.
 - `parse_crs_string`, `detect_crs_from_sidecar` and `extract_epsg_from_wkt` ignore
   one leading UTF-8 byte order mark (U+FEFF), and `parse_crs_string` also ignores
   the whitespace after it. Before, a `.prj` saved by Windows Notepad failed with
