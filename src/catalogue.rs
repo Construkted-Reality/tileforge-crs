@@ -12,9 +12,11 @@
 /// offset from WGS 84 (GGRS87, VN-2000, Israel 1993); the crate does not
 /// shift them either, with or without the clause.
 ///
-/// `false` for a definition on any other ellipsoid or on a sphere, for a
-/// grid-based datum such as NAD27, and for a code that is not in the
-/// catalogue. A zero shift cannot be confirmed for those.
+/// `false` for a definition on any other ellipsoid or on a sphere without
+/// the null grid, for a grid-based datum such as NAD27, and for a code that
+/// is not in the catalogue. A zero shift cannot be confirmed for those. The
+/// null grid marks the Web Mercator codes (EPSG:3857, 3785, 6871), to which
+/// PROJ applies no shift either.
 pub(crate) fn accepts_zero_towgs84(epsg: u16) -> bool {
     let Some(definition) = crs_definitions::from_code(epsg) else {
         return false;

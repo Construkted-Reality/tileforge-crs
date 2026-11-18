@@ -31,9 +31,9 @@ fn projcs_with_towgs84(datum_shift: &str, epsg: u16) -> String {
 }
 
 #[test]
-fn zero_towgs84_is_accepted_for_a_datum_that_needs_no_shift() {
-    // EPSG:2992 is NAD83(HARN) / Oregon Lambert (ft), on GRS80. The catalogue
-    // applies no shift to it, which is what a zero TOWGS84 declares.
+fn zero_towgs84_is_accepted_for_a_code_on_grs80_or_wgs84() {
+    // EPSG:2992 is NAD83(HARN) / Oregon Lambert (ft), on GRS80. The crate
+    // applies no shift to it, so a zero TOWGS84 changes nothing.
     for zero in [
         "TOWGS84[0,0,0,0,0,0,0]",
         "TOWGS84[0,0,0]",
