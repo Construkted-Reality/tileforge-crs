@@ -80,14 +80,14 @@ pub(crate) const BYTE_ORDER_MARK: char = '\u{feff}';
 pub(crate) fn extract_epsg(wkt: &str) -> Result<WktExtraction, CrsError> {
     let zero_towgs84 = reject_explicit_transforms(wkt)?;
     let extraction = extract_scanned_epsg(wkt)?;
-    // A zero TOWGS84 is accepted only for a code on GRS80 or WGS 84, where
+    // A zero TOWGS84 is accepted only for a code on GRS80 or WGS 84 to which
     // the crate applies no datum shift. For any other code it cannot be
     // confirmed.
     if zero_towgs84 && !accepts_zero_towgs84(extraction.epsg) {
         return Err(CrsError::parse(format!(
             "TOWGS84 declares a zero datum shift, but EPSG:{} is not a CRS on the GRS80 or \
-             WGS 84 ellipsoid in the catalogue; a zero shift is accepted only for such a \
-             CRS, so this WKT is refused",
+             WGS 84 ellipsoid without a datum shift in the catalogue; a zero shift is \
+             accepted only for such a CRS, so this WKT is refused",
             extraction.epsg
         )));
     }
