@@ -276,3 +276,22 @@ fn delimiter_and_bracket_rules_apply_inside_a_bound_vertical_leg() {
         assert!(extract_epsg_from_wkt(&wkt).is_err(), "{wkt}");
     }
 }
+
+#[test]
+fn bound_vertical_block_after_the_root_block_is_not_exempt() {
+    // Text after the root block is not part of the CRS. A second top-level
+    // block must not get the exemption of a vertical leg.
+    let root = r#"PROJCS["p",GEOGCS["g",AUTHORITY["EPSG","4267"]],AUTHORITY["EPSG","26717"]]"#;
+    let block = r#"BOUNDCRS[SOURCECRS[VERT_CS["v"]],TOWGS84[100,200,300]]"#;
+    for wkt in [
+        format!("{root},{block}"),
+        format!("{root},COMPOUNDCRS[\"c\",{block}]"),
+    ] {
+        let err = extract_epsg_from_wkt(&wkt).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("declares an explicit datum transformation"),
+            "{wkt}: {err}"
+        );
+    }
+}

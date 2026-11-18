@@ -185,7 +185,9 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
     // exempt vertical `BOUNDCRS` block opened while the scan is inside it.
     let mut depth: usize = 0;
     let mut exempt_from: Option<usize> = None;
-    // Whether the root block is a compound CRS.
+    // Number of top-level blocks opened so far, and whether the first one
+    // (the root) is a compound CRS.
+    let mut top_level_blocks: usize = 0;
     let mut root_is_compound = false;
     let mut i = 0;
     while i < bytes.len() {
@@ -231,7 +233,11 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
                 // root, and as the root itself, which the caller then
                 // refuses with its own message. Nested anywhere else it is
                 // not a vertical leg.
-                let leg_position = depth == 0 || (depth == 1 && root_is_compound);
+                let leg_position = match depth {
+                    0 => top_level_blocks == 0,
+                    1 => top_level_blocks == 1 && root_is_compound,
+                    _ => false,
+                };
                 if leg_position
                     && id.eq_ignore_ascii_case("BOUNDCRS")
                     && bound_crs_has_vertical_source(wkt, end)
@@ -248,8 +254,11 @@ fn reject_explicit_transforms(wkt: &str) -> Result<(), CrsError> {
             let open = skip_whitespace(bytes, end);
             if bytes.get(open) == Some(&b'[') {
                 if depth == 0 {
-                    root_is_compound = id.eq_ignore_ascii_case("COMPD_CS")
-                        || id.eq_ignore_ascii_case("COMPOUNDCRS");
+                    if top_level_blocks == 0 {
+                        root_is_compound = id.eq_ignore_ascii_case("COMPD_CS")
+                            || id.eq_ignore_ascii_case("COMPOUNDCRS");
+                    }
+                    top_level_blocks += 1;
                 }
                 depth += 1;
                 i = open + 1;
