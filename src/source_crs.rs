@@ -1,14 +1,14 @@
 //! Canonical source-CRS handle.
 //!
-//! A thin newtype around a `u16` EPSG code. Both VLR-extraction paths
-//! (GeoTIFF GeoKey + OGC WKT) end here; everything downstream consumes
-//! `SourceCrs` and never sees raw VLR bytes or WKT strings.
+//! A thin newtype around a `u16` EPSG code. Whatever a consumer reads the
+//! CRS from (in-band metadata, a sidecar, a command-line flag), it reduces
+//! it to an EPSG code and wraps it here; [`crate::Reprojector`] takes a
+//! `SourceCrs`, never raw metadata or WKT strings.
 
-/// Canonical source-CRS handle. Carries an EPSG code only — keeping the
-/// internal representation this narrow lets every downstream consumer
-/// (the `Reprojector`, the parity oracle, future `--source-crs` flag
-/// support) work uniformly without re-parsing VLR-format-specific
-/// payloads.
+/// Canonical source-CRS handle. Carries an EPSG code only. Keeping the
+/// internal representation this narrow lets every downstream user (the
+/// `Reprojector`, the parity oracle, a consumer's CRS override flag) work
+/// uniformly without re-parsing format-specific payloads.
 ///
 /// The newtype shape is deliberate: a bare `u16` would compose silently
 /// with unrelated counts/sizes; wrapping it in a struct keeps the

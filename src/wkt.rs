@@ -35,6 +35,18 @@ pub struct WktExtraction {
 }
 
 /// Extract the EPSG code from a CRS WKT string.
+///
+/// Unlike [`parse_crs_string`](crate::parse_crs_string), this function
+/// returns the GeoTIFF sentinel codes `0` and `32767` as `Ok`. A caller
+/// that passes the code on to [`Reprojector::new`](crate::Reprojector::new)
+/// must first check it with [`is_geotiff_sentinel`](crate::is_geotiff_sentinel).
+///
+/// # Errors
+///
+/// [`CrsError::Parse`] when the WKT has an unsupported root, unbalanced
+/// brackets, a `(` or `)` delimiter, a `BOUNDCRS` or `TOWGS84` operation,
+/// no EPSG `AUTHORITY`/`ID` clause, two different EPSG codes in one
+/// block, or a compound CRS with more than one horizontal block.
 pub fn extract_epsg_from_wkt(wkt: &str) -> Result<WktExtraction, CrsError> {
     reject_explicit_transforms(wkt)?;
     let bytes = wkt.as_bytes();
