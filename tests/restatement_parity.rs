@@ -15,6 +15,10 @@ use tileforge_crs::{CrsError, Reprojector, SourceCrs};
 /// The two compute the same projection, so the difference is numerical only.
 const PARITY_TOLERANCE_M: f64 = 1.0e-5;
 
+/// Fixture CRSs that proj4rs 0.1.10 cannot build. `Reprojector::new` refuses
+/// them with `UnknownEpsg` before and after the restatement.
+const UNBUILDABLE: [u16; 9] = [2085, 2086, 5458, 6200, 6201, 6202, 6966, 32061, 32062];
+
 /// EPSG:8325, NAD83(2011) / Oregon Mitchell zone (m), `+k_0=0.99927`, at
 /// the centre of its area of use, and the EPSG:4978 position of the PROJ
 /// inverse projection placed on the WGS 84 ellipsoid.
@@ -85,8 +89,6 @@ fn every_restated_crs_matches_the_proj_reference() {
     for row in &rows {
         let rp = match Reprojector::new(SourceCrs::new(row.epsg)) {
             Ok(rp) => rp,
-            // proj4rs 0.1.10 cannot build some of these projections at all;
-            // they fail loudly on every version of this crate.
             Err(CrsError::UnknownEpsg(_)) => {
                 unbuildable.insert(row.epsg);
                 continue;
@@ -129,5 +131,6 @@ fn every_restated_crs_matches_the_proj_reference() {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    eprintln!("unbuildable in proj4rs: {unbuildable:?}");
+    let expected: std::collections::BTreeSet<u16> = UNBUILDABLE.into_iter().collect();
+    assert_eq!(unbuildable, expected, "CRSs that fail to build");
 }

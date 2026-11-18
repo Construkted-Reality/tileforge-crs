@@ -122,9 +122,11 @@ revision, not by version, so a version bump here does not by itself break them.
   mostly NAD83 low-distortion projections (Oregon, Montana RMTCRS, Wisconsin
   WISCRS, Kansas KS RCS). At the centre of the area of use the old position
   was up to 196 m from PROJ (EPSG:8325 and 8326, Oregon Mitchell zone),
-  39 CRSs more than 1 m, median 0.19 m. Every row of the new PROJ reference
-  fixture `tests/fixtures/restatement-reference.txt` (378 rows) now agrees to
-  10 µm. The output of every other catalogue CRS is bit-identical. Closes
+  39 CRSs more than 1 m, median 0.19 m; at the second fixture point of
+  EPSG:8325 it was 203 m. The new PROJ reference fixture
+  `tests/fixtures/restatement-reference.txt` has 378 rows for 189 CRSs. The
+  360 rows of the 180 CRSs that `proj4rs` can build now agree to 10 µm; the
+  test pins the other 9 CRSs, which fail to build before and after. The output of every other catalogue CRS is bit-identical. Closes
   issue #7.
 - `parse_crs_string`, `detect_crs_from_sidecar` and `extract_epsg_from_wkt` ignore
   one leading UTF-8 byte order mark (U+FEFF), and `parse_crs_string` also ignores
