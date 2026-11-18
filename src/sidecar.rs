@@ -7,13 +7,14 @@
 //! ESRI/Windows tooling). Two body formats are accepted:
 //!
 //! - **OGC WKT** — full `PROJCS[...]` / `GEOGCS[...]` / `GEOCCS[...]`
-//!   / `COMPD_CS[...]` string, same format as a LAS-1.4 WKT VLR.
+//!   / `COMPD_CS[...]` string or its WKT2 equivalent.
 //!   Reuses [`extract_epsg_from_wkt`].
 //! - **Short-form `EPSG:NNNNN`** — single-line content produced by
 //!   `gdalsrsinfo -o proj` and many lidar-export pipelines.
 //!
-//! Short-form is tried first (cheap) so a malformed WKT body still
-//! surfaces the WKT-specific error.
+//! Short-form is tried first (cheap). A body that starts with `EPSG:`
+//! but carries an invalid code gets a short-form error; any other body
+//! that fails surfaces the WKT-specific error.
 //!
 //! Returns:
 //! - `Ok(Some(epsg))` — sidecar found and parsed.
@@ -22,11 +23,13 @@
 //!   silently ignore: a malformed `.prj` next to a PLY is almost always
 //!   a user mistake (renamed file, half-finished export).
 
+use std::fs::File;
+use std::io::{ErrorKind, Read};
 use std::path::Path;
 
 use crate::error::CrsError;
 use crate::reproject::is_geotiff_sentinel;
-use crate::wkt::extract_epsg_from_wkt;
+use crate::wkt::{echo_fragment, extract_epsg_from_wkt};
 
 /// Filename suffixes tried in order. `.prj` is the GIS canonical (ESRI,
 /// GDAL, PDAL, lastools); `.qpj` is QGIS's WKT-2 variant. Both carry the
@@ -35,6 +38,10 @@ use crate::wkt::extract_epsg_from_wkt;
 /// case-sensitive filesystem those are distinct files. Lowercase is tried
 /// first so it keeps precedence when both cases exist.
 const SIDECAR_SUFFIXES: &[&str] = &[".prj", ".PRJ", ".qpj", ".QPJ"];
+
+/// Largest sidecar body read, in bytes (1 MiB). A CRS definition is a few
+/// kilobytes at most, so a larger file is refused before it is parsed.
+const MAX_SIDECAR_BYTES: u64 = 1024 * 1024;
 
 /// Outcome of parsing a CRS string. Carries the resolved EPSG plus
 /// whether a vertical / compound component was present and dropped.
@@ -65,18 +72,27 @@ pub struct SidecarCrs {
 }
 
 /// Look for a sidecar `.prj`/`.qpj` (or uppercase `.PRJ`/`.QPJ`) next to
-/// `input`. Returns the first sidecar that parses cleanly. Both suffix
-/// cases are probed so a `foo.PRJ` from legacy ESRI/Windows tooling next
-/// to `foo.ply` is found on a case-sensitive filesystem; the base
-/// filename stem must still match. Lowercase suffixes take precedence.
+/// `input`. Suffixes are probed in the order `.prj`, `.PRJ`, `.qpj`,
+/// `.QPJ`, and the first sidecar that **exists** is used: if it fails to
+/// read or parse, the call returns that error and does not try the later
+/// suffixes. Both suffix cases are probed so a `foo.PRJ` from legacy
+/// ESRI/Windows tooling next to `foo.ply` is found on a case-sensitive
+/// filesystem; the base filename stem must still match.
+///
+/// # Errors
+///
+/// - [`CrsError::Io`] when the sidecar cannot be read, is not UTF-8, or is
+///   larger than 1 MiB (1,048,576 bytes). The size check reads at most one
+///   byte past the limit.
+/// - [`CrsError::Parse`] when the body is neither the `EPSG:NNNNN` short
+///   form nor a supported WKT body.
 pub fn detect_crs_from_sidecar(input: &Path) -> Result<Option<SidecarCrs>, CrsError> {
     for suffix in SIDECAR_SUFFIXES {
         let candidate = input.with_extension(suffix.trim_start_matches('.'));
         if !candidate.is_file() {
             continue;
         }
-        let body = std::fs::read_to_string(&candidate)
-            .map_err(|e| CrsError::io(&candidate, format!("read CRS sidecar: {e}")))?;
+        let body = read_sidecar_bounded(&candidate)?;
         let parsed = match parse_crs_string(body.trim()) {
             Ok(p) => p,
             // A sidecar declaring a GeoTIFF sentinel (0 / 32767) is not a
@@ -107,6 +123,46 @@ pub fn detect_crs_from_sidecar(input: &Path) -> Result<Option<SidecarCrs>, CrsEr
     Ok(None)
 }
 
+/// Read a sidecar body as UTF-8, refusing a file larger than
+/// [`MAX_SIDECAR_BYTES`]. At most `MAX_SIDECAR_BYTES + 1` bytes are read or
+/// allocated, whatever size the file reports.
+fn read_sidecar_bounded(path: &Path) -> Result<String, CrsError> {
+    let read_err = |e: std::io::Error| CrsError::io(path, format!("read CRS sidecar: {e}"));
+    let file = File::open(path).map_err(read_err)?;
+    let reported_len = file.metadata().map_or(0, |m| m.len());
+    let first_capacity = usize::try_from(reported_len.min(MAX_SIDECAR_BYTES) + 1).unwrap_or(1);
+    let mut bytes = Vec::with_capacity(first_capacity);
+    let mut reader = file.take(MAX_SIDECAR_BYTES + 1);
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(read_err(e)),
+        };
+        // `reserve_exact` keeps the capacity at the bytes read so far, so a
+        // file that reports a wrong length still cannot raise it past the cap.
+        bytes.reserve_exact(n);
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+    if bytes.len() as u64 > MAX_SIDECAR_BYTES {
+        return Err(CrsError::io(
+            path,
+            format!(
+                "CRS sidecar is larger than the {MAX_SIDECAR_BYTES}-byte limit; \
+                 a CRS definition is a few kilobytes, so this file is not read"
+            ),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        read_err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ))
+    })
+}
+
 /// Parse a CRS string into a [`ParsedCrs`] (EPSG + vertical-stripped
 /// flag). Accepts two forms:
 ///
@@ -135,7 +191,8 @@ pub fn detect_crs_from_sidecar(input: &Path) -> Result<Option<SidecarCrs>, CrsEr
 /// value to [`Reprojector::new`](crate::Reprojector::new) / the proj4
 /// catalogue.
 pub fn parse_crs_string(body: &str) -> Result<ParsedCrs, CrsError> {
-    if let Some(epsg) = parse_short_form_epsg(body) {
+    if let Some(short_form) = parse_short_form_epsg(body) {
+        let epsg = short_form?;
         if is_geotiff_sentinel(epsg) {
             return Err(CrsError::sentinel_code(epsg));
         }
@@ -152,9 +209,9 @@ pub fn parse_crs_string(body: &str) -> Result<ParsedCrs, CrsError> {
         Ok(p) if is_geotiff_sentinel(p.epsg) => Err(CrsError::sentinel_code(p.epsg)),
         Ok(p) => Ok(p),
         Err(e) => Err(CrsError::parse(format!(
-            "expected `EPSG:NNNNN` short form or OGC WKT \
-             `PROJCS[...]` / `GEOGCS[...]` / `GEOCCS[...]` / \
-             `COMPD_CS[...]`; WKT parse error: {e}"
+            "expected `EPSG:NNNNN` short form or OGC WKT1 \
+             `PROJCS`/`GEOGCS`/`GEOCCS`/`COMPD_CS` or WKT2 \
+             `PROJCRS`/`GEOGCRS`/`GEODCRS`/`COMPOUNDCRS`; WKT parse error: {e}"
         ))),
     }
 }
@@ -169,14 +226,22 @@ pub fn parse_crs_string_epsg(body: &str) -> Result<u16, CrsError> {
 /// Parse the GDAL-canonical short form `EPSG:NNNNN`. Case-insensitive
 /// on the `EPSG` prefix; tolerates whitespace around the colon and a
 /// trailing newline (already trimmed by the caller, but a stray
-/// internal space is fine). Returns `None` if the body doesn't match
-/// the short form — caller falls through to WKT.
-fn parse_short_form_epsg(body: &str) -> Option<u16> {
+/// internal space is fine). Returns `None` if the body does not start
+/// with `EPSG:` (the caller falls through to WKT), and `Some(Err(_))` if
+/// it does but the code is not a `u16`.
+fn parse_short_form_epsg(body: &str) -> Option<Result<u16, CrsError>> {
     let (prefix, rest) = body.split_once(':')?;
     if !prefix.trim().eq_ignore_ascii_case("EPSG") {
         return None;
     }
-    rest.trim().parse::<u16>().ok()
+    let code_text = rest.trim();
+    Some(code_text.parse::<u16>().map_err(|_| {
+        CrsError::parse(format!(
+            "`EPSG:NNNNN` short form has an invalid code {:?}; the code must be an \
+             integer from 0 to 65535",
+            echo_fragment(code_text)
+        ))
+    }))
 }
 
 #[cfg(test)]
@@ -272,6 +337,58 @@ mod tests {
     }
 
     #[test]
+    fn oversized_sidecar_fails_with_size_limit_error() {
+        let ply = write_tmp("oversized.ply", "ply\n");
+        let prj = ply.with_extension("prj");
+        let f = std::fs::File::create(&prj).unwrap();
+        f.set_len(8 * 1024 * 1024).unwrap();
+        let err = detect_crs_from_sidecar(&ply).unwrap_err();
+        let CrsError::Io { path, detail } = &err else {
+            panic!("want Io got {err:?}");
+        };
+        assert_eq!(path, &prj.display().to_string());
+        assert!(
+            detail.contains(&MAX_SIDECAR_BYTES.to_string()),
+            "got: {detail}"
+        );
+        assert!(detail.contains("limit"), "got: {detail}");
+    }
+
+    #[test]
+    fn sidecar_at_size_limit_is_read() {
+        let ply = write_tmp("at-limit.ply", "ply\n");
+        let prj = ply.with_extension("prj");
+        let limit = usize::try_from(MAX_SIDECAR_BYTES).unwrap();
+        let mut body = KINGSTON_WKT.to_string();
+        body.push_str(&" ".repeat(limit - body.len()));
+        assert_eq!(body.len(), limit);
+        std::fs::write(&prj, &body).unwrap();
+        assert_eq!(detect_crs_from_sidecar(&ply).unwrap().unwrap().epsg, 32617);
+
+        body.push(' ');
+        std::fs::write(&prj, &body).unwrap();
+        assert!(matches!(
+            detect_crs_from_sidecar(&ply).unwrap_err(),
+            CrsError::Io { .. }
+        ));
+    }
+
+    #[test]
+    fn non_utf8_sidecar_is_io_error() {
+        let ply = write_tmp("latin1.ply", "ply\n");
+        let prj = ply.with_extension("prj");
+        std::fs::write(&prj, b"EPSG:\xff32617").unwrap();
+        let err = detect_crs_from_sidecar(&ply).unwrap_err();
+        let CrsError::Io { detail, .. } = &err else {
+            panic!("want Io got {err:?}");
+        };
+        assert_eq!(
+            detail,
+            "read CRS sidecar: stream did not contain valid UTF-8"
+        );
+    }
+
+    #[test]
     fn uppercase_prj_sidecar_is_found() {
         // F6: legacy ESRI/Windows tooling emits `FOO.PRJ`. On case-sensitive
         // Linux filesystems the old lowercase-only probe missed it and
@@ -316,6 +433,49 @@ mod tests {
         std::fs::write(&prj, "AUTO:42001").unwrap();
         let err = detect_crs_from_sidecar(&ply).unwrap_err();
         assert!(err.to_string().contains("WKT"), "got: {err}");
+    }
+
+    #[test]
+    fn short_form_with_invalid_code_reports_the_short_form() {
+        for (body, shown) in [
+            ("EPSG:65536", "\"65536\""),
+            ("EPSG:", "\"\""),
+            ("EPSG:-1", "\"-1\""),
+            ("EPSG:32617 extra", "\"32617 extra\""),
+            ("epsg : abc", "\"abc\""),
+        ] {
+            let err = parse_crs_string(body).unwrap_err();
+            let CrsError::Parse(msg) = &err else {
+                panic!("want Parse got {err:?}");
+            };
+            assert!(
+                msg.contains("short form has an invalid code"),
+                "{body}: {msg}"
+            );
+            assert!(msg.contains(shown), "{body}: {msg}");
+            assert!(!msg.contains("not followed by"), "{body}: {msg}");
+        }
+    }
+
+    #[test]
+    fn short_form_invalid_code_text_is_truncated() {
+        let body = format!("EPSG:{}", "9".repeat(10_000));
+        let msg = parse_crs_string(&body).unwrap_err().to_string();
+        assert!(msg.len() < 400, "len {}", msg.len());
+    }
+
+    #[test]
+    fn short_form_sign_and_leading_zero_still_parse() {
+        assert_eq!(parse_crs_string("EPSG:+32617").unwrap().epsg, 32617);
+        assert_eq!(parse_crs_string("EPSG:032617").unwrap().epsg, 32617);
+    }
+
+    #[test]
+    fn combined_error_names_wkt1_and_wkt2_roots() {
+        let msg = parse_crs_string("this is not WKT").unwrap_err().to_string();
+        for root in ["PROJCS", "COMPD_CS", "PROJCRS", "COMPOUNDCRS", "EPSG:NNNNN"] {
+            assert!(msg.contains(root), "missing {root}: {msg}");
+        }
     }
 
     #[test]

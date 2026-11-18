@@ -2,8 +2,11 @@
 //!
 //! tileforge-mesh's georeferencing (ADR-041) reprojects every vertex to ECEF
 //! (via [`crate::Reprojector`]), then into a **local ENU metric frame** centred
-//! at the dataset origin, so the whole metric pipeline runs unchanged and
-//! tile-local f32 stays sub-mm. The single root `local→ECEF` transform written
+//! at the dataset origin, so the whole metric pipeline runs unchanged in
+//! metres. Local coordinates stored as `f32` are quantised by their distance
+//! from the origin: the spacing between adjacent `f32` values is about
+//! 0.98 mm at 10 km, 7.8 mm at 100 km and 62.5 mm at 1000 km, and passes
+//! 1 mm beyond 16,384 m. The single root `local→ECEF` transform written
 //! to `tileset.json` is exactly this frame's [`EnuFrame::enu_to_ecef_matrix`].
 //!
 //! Axis mapping is **East→X, North→Y, Up→Z** (ADR-041 D3/R1): the matrix's
