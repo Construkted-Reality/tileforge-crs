@@ -10,6 +10,20 @@ revision, not by version, so a version bump here does not by itself break them.
 
 ## [Unreleased]
 
+### Added
+- `Reprojector::check_area_of_use` compares one source coordinate (the dataset
+  centre) with the EPSG area of use of the source CRS. It returns
+  `AreaOfUseCheck::Inside` within 1 degree of the area, `AreaOfUseCheck::Outside`
+  (a warning for the consumer, with the position, the area and the excess) from
+  1 to 20 degrees of arc outside, and `CrsError::OutsideAreaOfUse` beyond
+  20 degrees. A longitude difference is measured along the parallel.
+  It catches coordinates in the wrong unit and many wrong CRS declarations.
+  `to_ecef` is unchanged: a consumer must call the check.
+- `AreaOfUse`, `AreaOfUseCheck`, `OutsideAreaOfUse` and
+  `CrsError::OutsideAreaOfUse(String)`.
+- `tools/gen_area_of_use.py` generates `src/area_of_use_table.rs` from the `BBOX`
+  of 7,492 catalogue definitions.
+
 ### Changed
 - `detect_crs_from_sidecar` refuses a `.prj`/`.qpj` sidecar larger than 1 MiB
   (1,048,576 bytes) with `CrsError::Io`. The read stops one byte past the limit,
