@@ -11,6 +11,9 @@
 use proj4rs::Proj;
 use proj4rs::transform::transform;
 
+use crate::area_of_use::{
+    AreaOfUse, AreaOfUseCheck, OutsideAreaOfUse, REFUSAL_MARGIN_DEG, TOLERANCE_DEG,
+};
 use crate::error::CrsError;
 use crate::source_crs::SourceCrs;
 
@@ -149,6 +152,71 @@ impl Reprojector {
         Ok([p.0, p.1, p.2])
     }
 
+    /// Check one source coordinate against the EPSG area of use of the
+    /// source CRS.
+    ///
+    /// A projection returns a position for almost any input, so coordinates
+    /// in the wrong unit, or coordinates of another CRS, give a valid position
+    /// in the wrong part of the world. Call this once with a representative
+    /// coordinate (the dataset centre) before a conversion. `xyz` has the same
+    /// axis order and units as for [`Reprojector::to_ecef`]. The height is not
+    /// used.
+    ///
+    /// - [`AreaOfUseCheck::Inside`]: inside the area, or within 1 degree of it.
+    /// - [`AreaOfUseCheck::Outside`]: 1 to 20 degrees outside. The data can be
+    ///   valid, so the consumer should pass this on as a warning.
+    /// - [`AreaOfUseCheck::Unknown`]: the catalogue records no area for the
+    ///   CRS, or the source is EPSG:4978.
+    ///
+    /// The check cannot detect a wrong CRS whose coordinates fall inside the
+    /// area of use.
+    ///
+    /// # Errors
+    ///
+    /// - [`CrsError::OutsideAreaOfUse`] when the position is more than
+    ///   20 degrees outside the area of use.
+    /// - [`CrsError::Reproject`] when the coordinate cannot be transformed
+    ///   (non-finite input, or a projection failure).
+    pub fn check_area_of_use(&self, xyz: [f64; 3]) -> Result<AreaOfUseCheck, CrsError> {
+        if self.is_identity() {
+            return Ok(AreaOfUseCheck::Unknown);
+        }
+        let Some(area) = AreaOfUse::for_epsg(self.source_epsg) else {
+            return Ok(AreaOfUseCheck::Unknown);
+        };
+        // A geocentric source has no separate height. For every other source
+        // the height is dropped, so a height in the wrong unit cannot move
+        // the horizontal position that is checked.
+        let position = if self.source.is_geocent() {
+            xyz
+        } else {
+            if !xyz[2].is_finite() {
+                return Err(CrsError::reproject(format!(
+                    "non-finite input coordinate ({}, {}, {}) for EPSG:{}",
+                    xyz[0], xyz[1], xyz[2], self.source_epsg
+                )));
+            }
+            [xyz[0], xyz[1], 0.0]
+        };
+        let (lon_deg, lat_deg) = geodetic_degrees(self.to_ecef(position)?);
+        let excess_deg = area.excess_deg(lon_deg, lat_deg);
+        if excess_deg <= TOLERANCE_DEG {
+            return Ok(AreaOfUseCheck::Inside);
+        }
+        let outside = OutsideAreaOfUse {
+            epsg: self.source_epsg,
+            lon_deg,
+            lat_deg,
+            area,
+            excess_deg,
+        };
+        if excess_deg <= REFUSAL_MARGIN_DEG {
+            Ok(AreaOfUseCheck::Outside(outside))
+        } else {
+            Err(CrsError::outside_area_of_use(outside.to_string()))
+        }
+    }
+
     /// Metres per native horizontal unit for linear source coordinates.
     /// Geographic longitude and latitude are angular, so they return `None`.
     pub fn horizontal_meters_per_unit(&self) -> Option<f64> {
@@ -166,6 +234,18 @@ impl Reprojector {
     pub fn is_identity(&self) -> bool {
         self.source_epsg == EPSG_ECEF
     }
+}
+
+/// WGS 84 first eccentricity squared.
+const WGS84_ES: f64 = 0.006_694_379_990_141_316_5;
+
+/// Geodetic longitude and latitude in degrees of an ECEF position. Exact for
+/// a position on the WGS 84 ellipsoid surface, which is what the area-of-use
+/// check passes; close for any other position.
+fn geodetic_degrees(ecef: [f64; 3]) -> (f64, f64) {
+    let lon = ecef[1].atan2(ecef[0]);
+    let lat = ecef[2].atan2(ecef[0].hypot(ecef[1]) * (1.0 - WGS84_ES));
+    (lon.to_degrees(), lat.to_degrees())
 }
 
 /// GeoTIFF reserved sentinel codes: `0` ("undefined") and `32767`

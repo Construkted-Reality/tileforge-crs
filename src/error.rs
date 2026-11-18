@@ -12,6 +12,8 @@
 //! - [`CrsError::UnknownEpsg`] — `Reprojector::new` could not resolve a
 //!   source EPSG (or the fixed ECEF target) against the proj4
 //!   `crs-definitions` catalogue.
+//! - [`CrsError::OutsideAreaOfUse`]: `Reprojector::check_area_of_use` found a
+//!   source coordinate far outside the EPSG area of use of its CRS.
 //! - [`CrsError::Reproject`] — `Reprojector::to_ecef` failed to transform
 //!   a point.
 //! - [`CrsError::Parse`] — a CRS string / WKT body failed to parse into
@@ -31,6 +33,13 @@ pub enum CrsError {
     /// catalogue (source EPSG, or the fixed EPSG:4978 ECEF target).
     #[error("{0}")]
     UnknownEpsg(String),
+
+    /// A source coordinate lies more than 20 degrees outside the EPSG area
+    /// of use of its CRS (`Reprojector::check_area_of_use`). The usual causes
+    /// are a wrong CRS or a wrong coordinate unit. Carries a message that
+    /// names the CRS, the position and the area.
+    #[error("{0}")]
+    OutsideAreaOfUse(String),
 
     /// A point reprojection (source → ECEF) failed inside proj4rs.
     #[error("{0}")]
@@ -66,6 +75,11 @@ impl CrsError {
     /// Construct an [`CrsError::UnknownEpsg`].
     pub fn unknown_epsg(msg: impl Into<String>) -> Self {
         Self::UnknownEpsg(msg.into())
+    }
+
+    /// Construct a [`CrsError::OutsideAreaOfUse`].
+    pub fn outside_area_of_use(msg: impl Into<String>) -> Self {
+        Self::OutsideAreaOfUse(msg.into())
     }
 
     /// Construct a [`CrsError::Reproject`].
