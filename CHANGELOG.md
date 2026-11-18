@@ -15,12 +15,26 @@ revision, not by version, so a version bump here does not by itself break them.
   that a reprojector applies (identifier, name, published accuracy,
   parameters), so that a consumer can warn the user.
 - `CrsError::DatumShiftUnavailable(u16)`: `Reprojector::new` refuses a source
-  CRS that needs a datum shift when no verified Helmert transformation to
-  WGS 84 is available for it (540 catalogue CRSs that `Reprojector::new`
-  accepted before, for example Xian 1980 and New Beijing).
+  CRS on an ellipsoid other than GRS80 or WGS 84 when no verified Helmert
+  transformation to WGS 84 is available for it: the PROJ database has no
+  static one (for example Xian 1980 and New Beijing), or `proj4rs` cannot
+  reproduce the PROJ position (`tools/datum-shift-exclusions.txt`). This
+  refuses 529 catalogue CRSs that `Reprojector::new` accepted before.
   `is_supported_epsg` returns `false` for these codes.
 - `tools/gen_datum_shifts.py` generates `src/datum_shift_table.rs` and the
   PROJ reference fixture `tests/fixtures/datum-shift-reference.txt`.
+- `Reprojector::check_area_of_use` compares one source coordinate (the dataset
+  centre) with the EPSG area of use of the source CRS. It returns
+  `AreaOfUseCheck::Inside` within 1 degree of the area, `AreaOfUseCheck::Outside`
+  (a warning for the consumer, with the position, the area and the excess) from
+  1 to 20 degrees of arc outside, and `CrsError::OutsideAreaOfUse` beyond
+  20 degrees. A longitude difference is measured along the parallel.
+  It catches coordinates in the wrong unit and many wrong CRS declarations.
+  `to_ecef` is unchanged: a consumer must call the check.
+- `AreaOfUse`, `AreaOfUseCheck`, `OutsideAreaOfUse` and
+  `CrsError::OutsideAreaOfUse(String)`.
+- `tools/gen_area_of_use.py` generates `src/area_of_use_table.rs` from the `BBOX`
+  of 7,492 catalogue definitions.
 
 ### Changed
 - `crs-definitions` 0.4 is now a direct dependency (it was already a
@@ -52,17 +66,20 @@ revision, not by version, so a version bump here does not by itself break them.
   keywords.
 
 ### Fixed
-- **Apply the datum shift for source CRSs on an ellipsoid other than GRS80 or
-  WGS 84.** The proj4 catalogue carries no datum shift, so `Reprojector`
-  placed the latitude and longitude of such a CRS directly on the WGS 84
-  ellipsoid. The position was wrong by the offset of the datum: 83 m to
-  166 m for the British, Dutch, Swiss, German, Austrian, Belgian and ED50
-  national grids, with a median of 111 m over all affected CRSs. `Reprojector`
-  now applies the EPSG Helmert transformation that PROJ ranks first, without
-  grid files, over the area of use of the CRS. This changes the output for
-  1,954 catalogue CRSs and for no other CRS. Every one of them agrees with
-  PROJ 9.8.1 to 10 µm on the reference fixture.
-- For the same 1,954 CRSs, restate what `proj4rs` 0.1.10 misreads in a
+- **Apply the datum shift for source CRSs whose datum is offset from WGS 84.**
+  The proj4 catalogue carries no datum shift, so `Reprojector` placed the
+  latitude and longitude of such a CRS directly on the WGS 84 ellipsoid. The
+  position was wrong by the offset of the datum: 83 m to 166 m for the
+  British, Dutch, Swiss, German, Austrian, Belgian and ED50 national grids,
+  325 m for the Greek Grid, with a median of 112 m over all affected CRSs.
+  `Reprojector` now applies a Helmert transformation: the first static Helmert
+  operation in the ranking that PROJ 9.8.1 makes, without grid files, for the
+  area of use of the CRS. This changes the output for 2,014 catalogue CRSs
+  (1,954 on an ellipsoid other than GRS80 or WGS 84, and 60 on GRS80 or WGS 84
+  whose datum is more than 5 m from WGS 84) and for no other CRS. Every one of
+  them agrees with PROJ 9.8.1 to 10 µm on the reference fixture. The output of
+  175 of them (GSK-2011, a zero-parameter operation) moves less than 1 m.
+- For the same 2,014 CRSs, restate what `proj4rs` 0.1.10 misreads in a
   catalogue definition: the `+k_0=` scale factor (ignored), an ellipsoid
   given by its minor axis (wrong flattening in the Transverse Mercator
   series), and a `+pm=` prime meridian (degrees added as radians).
@@ -81,7 +98,6 @@ revision, not by version, so a version bump here does not by itself break them.
 ### Removed
 - The unused test fixtures `tests/fixtures/fabregualta.epsg.txt` and
   `tests/fixtures/kingston-rd.epsg.txt`.
-
 
 ## [0.3.0] - 2026-09-30 - Expose coordinate units and reject unsupported operations
 

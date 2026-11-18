@@ -15,6 +15,8 @@
 //! - [`CrsError::DatumShiftUnavailable`]: `Reprojector::new` refused a
 //!   source EPSG whose datum needs a shift to WGS 84 that the crate cannot
 //!   supply.
+//! - [`CrsError::OutsideAreaOfUse`]: `Reprojector::check_area_of_use` found a
+//!   source coordinate far outside the EPSG area of use of its CRS.
 //! - [`CrsError::Reproject`] — `Reprojector::to_ecef` failed to transform
 //!   a point.
 //! - [`CrsError::Parse`] — a CRS string / WKT body failed to parse into
@@ -47,6 +49,12 @@ pub enum CrsError {
          derived; reproject the data to a WGS 84 based CRS before conversion"
     )]
     DatumShiftUnavailable(u16),
+    /// A source coordinate lies more than 20 degrees outside the EPSG area
+    /// of use of its CRS (`Reprojector::check_area_of_use`). The usual causes
+    /// are a wrong CRS or a wrong coordinate unit. Carries a message that
+    /// names the CRS, the position and the area.
+    #[error("{0}")]
+    OutsideAreaOfUse(String),
 
     /// A point reprojection (source → ECEF) failed inside proj4rs.
     #[error("{0}")]
@@ -87,6 +95,11 @@ impl CrsError {
     /// Construct a [`CrsError::DatumShiftUnavailable`] for the refused code.
     pub fn datum_shift_unavailable(epsg: u16) -> Self {
         Self::DatumShiftUnavailable(epsg)
+    }
+
+    /// Construct a [`CrsError::OutsideAreaOfUse`].
+    pub fn outside_area_of_use(msg: impl Into<String>) -> Self {
+        Self::OutsideAreaOfUse(msg.into())
     }
 
     /// Construct a [`CrsError::Reproject`].
